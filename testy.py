@@ -2,7 +2,7 @@ import pylink     # pip install pylink-square
 import re
 import time
 import sys
-import winsound
+#import winsound
 import random
 
 SIZE_TEST_VECTOR = 4
