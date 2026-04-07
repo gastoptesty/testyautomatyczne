@@ -34,9 +34,8 @@ def play_beep(freq, duration):
         import winsound
         winsound.Beep(freq, duration)
     else:
-        # Na Raspberry Pi wymaga zainstalowania: sudo apt install beep
-        # duration w systemowym beep jest w milisekundach (-l), a czestotliwosc (-f)
-        os.system(f"beep -f {freq} -l {duration}")
+        # 2>/dev/null ukrywa błędy braku uprawnień/urządzenia
+        os.system(f"beep -f {freq} -l {duration} 2>/dev/null")
 # =========================================================
 
 
