@@ -185,12 +185,14 @@ for i, emu in enumerate(emulators):
     print(f"[{i}] {display_name:<20} {product:<15} {serial:<12}")
 
 
-try:
-    choice = int(input("\nWybierz numer urządzenia: "))
-    selected_sn = emulators[choice].SerialNumber
-except (ValueError, IndexError):
-    print("Nieprawidłowy wybór.")
-    exit()
+# 2. Wybór urządzenia (ZAUTOMATYZOWANY)
+if len(emulators) > 0:
+    # Wybiera zawsze pierwszy z brzegu podłączony J-Link
+    selected_sn = emulators[0].SerialNumber
+    print(f"Automatycznie wybrano urządzenie 0 (SN: {selected_sn})")
+else:
+    print("Błąd: Brak dostępnych urządzeń do automatycznego wyboru.")
+    sys.exit()
 
 
 jlink.open(serial_no=selected_sn)
