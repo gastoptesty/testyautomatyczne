@@ -2,12 +2,23 @@ import pylink      # pip install pylink-square
 import re
 import time
 import sys
-import random
-import platform    # DODANO: do wykrywania systemu operacyjnego
-import os          # DODANO: do wywoływania komend w Linuksie
+import platform
+import os
 
+# =========================================================
+# ODBIERANIE ARGUMENTÓW Z GUI (runner.py)
+# =========================================================
+try:
+    NUMBER_OF_TESTS = int(sys.argv[1]) if len(sys.argv) > 1 else 200
+    IS_INFINITE = (sys.argv[2] == "1") if len(sys.argv) > 2 else False
+except:
+    NUMBER_OF_TESTS = 200
+    IS_INFINITE = False
+
+# =========================================================
+# ZMIENNE I STAŁE
+# =========================================================
 SIZE_TEST_VECTOR = 4
-NUMBER_OF_TESTS = 200
 WAIT_TIME_FOR_GATE_ARM_MOVEMENT = 6
 WAIT_TIMEOUT = 30
 POKE_DELAY_TIME = 0.5
@@ -27,23 +38,20 @@ left_counter = 0
 start_time = time.time()
 
 # =========================================================
-# DODANO: Wieloplatformowa funkcja dźwiękowa
+# FUNKCJE POMOCNICZE
 # =========================================================
 def play_beep(freq, duration):
-    import platform
     if platform.system() == "Windows":
         import winsound
         winsound.Beep(freq, duration)
     else:
-        # Puste polecenie - całkowicie ignorujemy dźwięk na RPi
+        # Puste polecenie na Raspberry Pi - ignorujemy dźwięk
         pass
-# =========================================================
-
 
 def wait_for_logs(log, timeout_sec):
     rtt = ''
-    start_time = time.time()
-    while time.time() - start_time < timeout_sec:
+    start_time_log = time.time()
+    while time.time() - start_time_log < timeout_sec:
         char = jlink.rtt_read(0, 1)
         if len(char) == 1:
             rtt += chr(char[0])
@@ -54,9 +62,8 @@ def wait_for_logs(log, timeout_sec):
     print(rtt)
     print("-----------========== DIAGNOSE ============-------------")
     print(f"Timeout reached. Log:{log} not found. - TEST FAILED")
-    play_beep(440, 500)  # ZMIENIONO: Wieloplatformowy beep
-    sys.exit()
-
+    play_beep(440, 500)  
+    sys.exit(1) # ZMIANA: Zwraca błąd (1) dla GUI
 
 def sensor_poke(num):
     jlink.rtt_write(0, f'sensor {num} 1\n'.encode('utf-8'))
@@ -88,9 +95,8 @@ def mode_set(mode):
         time.sleep(0.5)
     else:
         print(f"Mode:{mode} not found. - TEST FAILED")
-        play_beep(440, 500)  # ZMIENIONO: Wieloplatformowy beep
-        sys.exit()
-
+        play_beep(440, 500)
+        sys.exit(1) # ZMIANA: Zwraca błąd (1) dla GUI
 
 def check_counter(val_right, val_left):
     jlink.rtt_write(0, b'counter\n')
@@ -98,18 +104,17 @@ def check_counter(val_right, val_left):
     wait_for_logs(f'right counter:{val_right}', 0.5)
     wait_for_logs(f'left counter:{val_left}', 0.5)
 
-
 def get_counters(timeout_sec):
     jlink.rtt_write(0, b'counter\n')
     time.sleep(0.1)
 
     rtt = ''
-    start_time = time.time()
+    start_time_c = time.time()
 
     pattern_right = r"right counter:(\d+)"
     pattern_left = r"left counter:(\d+)"
 
-    while time.time() - start_time < timeout_sec:
+    while time.time() - start_time_c < timeout_sec:
         char = jlink.rtt_read(0, 1)
         if len(char) == 1:
             rtt += chr(char[0]) 
@@ -126,44 +131,43 @@ def get_counters(timeout_sec):
     else:
         print(rtt)
         print(f"Timeout: Counters NOT found.")
-        sys.exit()
-
+        sys.exit(1) # ZMIANA: Zwraca błąd (1) dla GUI
 
 def add_left_permission():
     jlink.rtt_write(0, b'add_l\n')
     time.sleep(0.1)
 
-
 def add_right_permission():
     jlink.rtt_write(0, b'add_r\n')
     time.sleep(0.1)
 
-
 def sim_passing_left_right():
     global left_counter
-    sensor_poke(LEFT_SENSOR) 
-    wait_for_logs("Permit manager: GATE OPENED", WAIT_TIME_FOR_GATE_ARM_MOVEMENT) 
-    sensor_poke(LEFT_SECURITY_SENSOR) 
+    sensor_poke(LEFT_SENSOR)  
+    wait_for_logs("Permit manager: GATE OPENED", WAIT_TIME_FOR_GATE_ARM_MOVEMENT)  
+    sensor_poke(LEFT_SECURITY_SENSOR)  
     sensor_poke(CENTER_SECURITY_SENSOR)
-    sensor_poke(RIGHT_SECURITY_SENSOR) 
-    sensor_poke(RIGHT_SENSOR) 
-    wait_for_logs("Permit manager: GATE CLOSED", WAIT_TIME_FOR_GATE_ARM_MOVEMENT) 
-    left_counter += 1 
-    check_counter(right_counter, left_counter) 
+    sensor_poke(RIGHT_SECURITY_SENSOR)  
+    sensor_poke(RIGHT_SENSOR)  
+    wait_for_logs("Permit manager: GATE CLOSED", WAIT_TIME_FOR_GATE_ARM_MOVEMENT)  
+    left_counter += 1  
+    check_counter(right_counter, left_counter)  
 
 def sim_passing_right_left():
     global right_counter
-    sensor_poke(RIGHT_SENSOR) 
-    wait_for_logs("Permit manager: GATE OPENED", WAIT_TIME_FOR_GATE_ARM_MOVEMENT) 
-    sensor_poke(RIGHT_SECURITY_SENSOR) 
+    sensor_poke(RIGHT_SENSOR)  
+    wait_for_logs("Permit manager: GATE OPENED", WAIT_TIME_FOR_GATE_ARM_MOVEMENT)  
+    sensor_poke(RIGHT_SECURITY_SENSOR)  
     sensor_poke(CENTER_SECURITY_SENSOR)
-    sensor_poke(LEFT_SECURITY_SENSOR) 
-    sensor_poke(LEFT_SENSOR) 
-    wait_for_logs("Permit manager: GATE CLOSED", WAIT_TIME_FOR_GATE_ARM_MOVEMENT) 
-    right_counter += 1 
-    check_counter(right_counter, left_counter) 
+    sensor_poke(LEFT_SECURITY_SENSOR)  
+    sensor_poke(LEFT_SENSOR)  
+    wait_for_logs("Permit manager: GATE CLOSED", WAIT_TIME_FOR_GATE_ARM_MOVEMENT)  
+    right_counter += 1  
+    check_counter(right_counter, left_counter)  
 
-
+# =========================================================
+# GŁÓWNY SKRYPT
+# =========================================================
 
 jlink = pylink.JLink()
 
@@ -171,55 +175,47 @@ emulators = jlink.connected_emulators()
 
 if not emulators:
     print("Nie znaleziono żadnych urządzeń J-Link.")
-    exit()
+    sys.exit(1)
 
-print("Dostępne urządzenia J-Link:")
-print(f"{'Nr':<4} {'Nazwa (Nickname)':<20} {'Model':<15} {'SN':<12}")
-print("-" * 55)
-
-for i, emu in enumerate(emulators):
-    nickname = emu.acNickname.decode('utf-8').strip('\x00')
-    display_name = nickname if nickname else "--- brak nazwy ---"
-    product = emu.acProduct.decode('utf-8').strip('\x00')
-    serial = emu.SerialNumber
-    print(f"[{i}] {display_name:<20} {product:<15} {serial:<12}")
-
-
-# 2. Wybór urządzenia (ZAUTOMATYZOWANY)
-if len(emulators) > 0:
-    # Wybiera zawsze pierwszy z brzegu podłączony J-Link
-    selected_sn = emulators[0].SerialNumber
-    print(f"Automatycznie wybrano urządzenie 0 (SN: {selected_sn})")
-else:
-    print("Błąd: Brak dostępnych urządzeń do automatycznego wyboru.")
-    sys.exit()
-
-
+# Zautomatyzowany wybór urządzenia, żeby skrypt nie czekał na input w GUI
+selected_sn = emulators[0].SerialNumber
 jlink.open(serial_no=selected_sn)
-print(f"\nWybrano: {jlink.product_name} o nazwie '{nickname}' (SN: {jlink.serial_number})")
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
 jlink.connect("STM32F030RC", verbose=True)
 jlink.rtt_start()
 jlink.restart()
 wait_for_logs("MODE:", 1)
 time.sleep(2)
-#>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> MODE SET >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> MODE SET >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 mode_set("WOLNE_LEWE_PRAWA")                                    # gate mode set - test FREE BOTH
 right_counter, left_counter = get_counters(1)                 # proper read of current counters value
-#>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> TEST 01 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-for i in range(NUMBER_OF_TESTS):
+
+print(f"\n=======================================================")
+print(f" Rozpoczynam testy. Nieskończoność: {IS_INFINITE}, Liczba: {NUMBER_OF_TESTS}")
+print(f"=======================================================\n")
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> TEST 01 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+count = 0
+while True:
+    count += 1
     time.sleep(1)
+    print(f"\n>>> ITERACJA NR: {count}")
+    
     print("FREE BOTH - ENTER LEFT -> EXIT RIGHT")
     sim_passing_left_right()
     time.sleep(1)
+    
     print("FREE BOTH - ENTER RIGHT -> EXIT LEFT")
     sim_passing_right_left()
 
+    # Przerwanie pętli, jeśli nie ma nieskończoności i osiągnięto limit
+    if not IS_INFINITE and count >= NUMBER_OF_TESTS:
+        break
+
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> TEST FINISHED <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 minutes, seconds = divmod(time.time()-start_time, 60)
-print(f"Test finished successfully - time: {int(minutes)} minutes {seconds:.2f} seconds")
+print(f"\nTest finished successfully - time: {int(minutes)} minutes {seconds:.2f} seconds")
 
 jlink.close()
-play_beep(1400, 100) # ZMIENIONO: Wieloplatformowy beep
-play_beep(3400, 200) # ZMIENIONO: Wieloplatformowy beep
-play_beep(2400, 100) # ZMIENIONO: Wieloplatformowy beep
+sys.exit(0)  # Sukces, runner.py zobaczy PASS
