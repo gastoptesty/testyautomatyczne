@@ -30,12 +30,13 @@ start_time = time.time()
 # DODANO: Wieloplatformowa funkcja dźwiękowa
 # =========================================================
 def play_beep(freq, duration):
+    import platform
     if platform.system() == "Windows":
         import winsound
         winsound.Beep(freq, duration)
     else:
-        # 2>/dev/null ukrywa błędy braku uprawnień/urządzenia
-        os.system(f"beep -f {freq} -l {duration} 2>/dev/null")
+        # Puste polecenie - całkowicie ignorujemy dźwięk na RPi
+        pass
 # =========================================================
 
 
