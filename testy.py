@@ -156,44 +156,56 @@ def rtt_get_param(idx, timeout_sec=1.0):
     return rtt_buffer
 
 def rtt_set_and_verify(idx, val):
-    """ Ustawia parametr udajac fizyczna klawiature i weryfikuje zapis w bramce. """
+    """ Ustawia parametr i weryfikuje zapis w bramce. Zabezpieczone przed pustym buforem. """
     for attempt in range(5):
-        # 1. Agresywne czyszczenie bufora odczytu ze smieci
+        # 0. WZBUDZENIE KONSOLI - upewniamy się, że terminal bramki nie wisi na wpół wpisanej komendzie
         try:
-            jlink.rtt_read(0, 4096)
+            jlink.rtt_write(0, b'\r\n')
+            time.sleep(0.1)
+            jlink.rtt_read(0, 4096) # Czyszczenie śmieci
         except:
             pass
 
-        # 2. Wyslanie komendy SET ZNAK PO ZNAKU
+        # 1. Wyslanie komendy SET W CAŁOŚCI (unikamy time-outów między znakami po stronie bramki)
         cmd_set = 'set {} {}\r\n'.format(idx, val)
-        for char in cmd_set:
-            jlink.rtt_write(0, char.encode('utf-8'))
-            time.sleep(0.02)
+        try:
+            jlink.rtt_write(0, cmd_set.encode('utf-8'))
+        except:
+            pass
             
-        time.sleep(1.5) 
+        time.sleep(1.5) # Czekamy bardzo dlugo na przeslanie zapisu na plyte silnika (Slave)
         
-        # 3. Czysczenie bufora po wysłaniu komendy
+        # 2. Czyscimy bufor z echa komendy SET
         try:
             jlink.rtt_read(0, 4096)
         except:
             pass
             
-        # 4. Zapytanie weryfikacyjne GET
+        # 3. Zapytanie weryfikacyjne GET (też w całości)
         cmd_get = 'get {}\r\n'.format(idx)
-        for char in cmd_get:
-            jlink.rtt_write(0, char.encode('utf-8'))
-            time.sleep(0.02)
+        try:
+            jlink.rtt_write(0, cmd_get.encode('utf-8'))
+        except:
+            pass
             
+        # 4. Zbieranie paczek z odpowiedzia
         start_t = time.time()
         rtt_buffer = ''
         
-        while time.time() - start_t < 1.0:
-            data = jlink.rtt_read(0, 1024)
-            if data:
-                rtt_buffer += "".join(map(chr, data))
-            time.sleep(0.01)
-                
-        # 5. Ekstrakcja liczby z odpowiedzi bramki
+        # Wydłużamy czas na 2 sekundy dla pewności
+        while time.time() - start_t < 2.0: 
+            try:
+                data = jlink.rtt_read(0, 1024)
+                if data:
+                    rtt_buffer += "".join(map(chr, data))
+                    # Jeśli mamy znak nowej linii, to znaczy że brama skończyła "mówić"
+                    if '\n' in rtt_buffer and len(rtt_buffer.strip()) > 0:
+                        break
+            except:
+                pass
+            time.sleep(0.05)
+            
+        # 5. Ekstrakcja liczby z odpowiedzi
         clean_rtt = rtt_buffer.replace('get', '').replace(str(idx), '')
         digits = re.findall(r'\d+', clean_rtt)
         
@@ -209,10 +221,7 @@ def rtt_set_and_verify(idx, val):
             print("   [DEBUG RTT] Surowa odpowiedz bramki: {}".format(repr(rtt_buffer)))
             
     return False
-
-# =========================================================
-# PRE-FLIGHT CHECKS (Testy i kalibracje)
-# =========================================================
+    
 def test_calibration_read_only():
     print("\n[PRE-CHECK] Sprawdzanie bezpieczenstwa kalibracji...")
     response = rtt_get_param(7)
