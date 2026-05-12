@@ -16,7 +16,7 @@ except:
     IS_INFINITE = False
 
 # =========================================================
-# ZMIENNE I STAŁE
+# ZMIENNE I STAŁE SYSTEMOWE
 # =========================================================
 SIZE_TEST_VECTOR = 4
 WAIT_TIME_FOR_GATE_ARM_MOVEMENT = 6
@@ -41,11 +41,11 @@ start_time = time.time()
 # --- OCZEKIWANE LOGI Z SYSTEMU (DO MODYFIKACJI POD TWOJE RTT) ---
 LOG_GATE_OPENED = "Permit manager: GATE OPENED"
 LOG_GATE_CLOSED = "Permit manager: GATE CLOSED"
-LOG_ALARM_INTRUSION = "ALARM INTRUSION"       # Próba wejścia bez aktywacji pierwszego czujnika
-LOG_ALARM_TAILGATING = "ALARM TAILGATING"     # Jazda na ogonie
-LOG_MOTOR_ERROR = "MOTOR ERROR"               # Przeciążenie silnika (np. za mały moment)
-LOG_ALARM_NO_PERMIT = "ALARM NO PERMIT"       # Wejście w trybie KONTROLA bez autoryzacji
-LOG_ALARM_SAFETY = "SAFETY ALARM"             # Naruszenie czujników strefy ruchu w trakcie pracy skrzydeł
+LOG_ALARM_INTRUSION = "ALARM INTRUSION"       
+LOG_ALARM_TAILGATING = "ALARM TAILGATING"     
+LOG_MOTOR_ERROR = "MOTOR ERROR"               
+LOG_ALARM_NO_PERMIT = "ALARM NO PERMIT"       
+LOG_ALARM_SAFETY = "SAFETY ALARM"             
 
 # =========================================================
 # FUNKCJE POMOCNICZE BAZOWE
@@ -165,25 +165,22 @@ def test_calibration_read_only():
         sys.exit(1)
         
     calib_val = int(digits[-1])
+    
+    # POPRAWKA: Akceptujemy od 0 do 4
     if calib_val < 0 or calib_val > 4:
         print(f"BŁĄD: Kalibracja poza bezpiecznym zakresem: {calib_val}. Zatrzymuję test!")
         sys.exit(1)
-    print("Kalibracja w normie.")
+    print(f"Kalibracja w normie. Odczytana wartość zerowa: {calib_val}")
 
 def test_find_optimal_torque():
-    """
-    Dynamicznie weryfikuje opory skrzydeł. Zaczyna od najmniejszego momentu i zwiększa go,
-    aż brama poprawnie się otworzy bez zgłoszenia błędu silnika.
-    """
     print("\n[PRE-CHECK] Dynamiczne szukanie optymalnego momentu obrotowego (Max Torque)...")
     optimal_torque = -1
     
-    # Według rtt_get_set_index_map.html, Max Torque (idx 28) ma zakres 0 - 20
     for tq in range(0, 21):
         print(f"-> Testuję moment obrotowy na poziomie: {tq}")
         rtt_set_param(28, tq)
         
-        # Inicjujemy próbę otwarcia (zakładamy tryb wolnego wejścia)
+        # Próba otwarcia
         jlink.rtt_write(0, f'sensor {LEFT_SENSOR} 1\n'.encode('utf-8'))
         time.sleep(0.5)
         jlink.rtt_write(0, f'sensor {LEFT_SENSOR} 0\n'.encode('utf-8'))
@@ -194,15 +191,14 @@ def test_find_optimal_torque():
             print(f"   [!] Moment {tq} jest za słaby. Brama wywaliła błąd. Resetuję i zwiększam...")
             reset()
             wait_for_logs("MODE:", 3)
-            mode_set("WOLNE_LEWE_PRAWA") # Przywracamy tryb roboczy po restarcie
+            mode_set("WOLNE_LEWE_PRAWA")
         else:
-            # Jeśli nie ma błędu silnika, zakładamy, że brama ruszyła (można też sprawdzać LOG_GATE_OPENED)
             has_opened = check_for_log_bool(LOG_GATE_OPENED, 2)
             if has_opened or not has_error:
                 print(f"   [OK] Znaleziono optymalny, bezpieczny moment roboczy: {tq}")
                 optimal_torque = tq
                 
-                # Brama jest otwarta, więc musimy zamknąć cykl przejścia żeby wróciła do zera
+                # Zamykamy cykl, żeby skrzydła wróciły do pozycji 0
                 sensor_poke(LEFT_SECURITY_SENSOR)
                 sensor_poke(CENTER_SECURITY_SENSOR)
                 sensor_poke(RIGHT_SECURITY_SENSOR)
@@ -216,7 +212,7 @@ def test_find_optimal_torque():
 
 def test_diagnostics_counters():
     print("\n[TŁO] Sprawdzanie liczników diagnostycznych w tle...")
-    response = rtt_get_param(60) # M.Comm Err
+    response = rtt_get_param(60) 
     digits = re.findall(r'\d+', response.replace('get 60', ''))
     if digits:
         err_count = int(digits[-1])
@@ -233,12 +229,11 @@ def execute_custom_sequence(iter_num, config):
     expect_count = config["count"]
     req_mode = config.get("mode", "WOLNE_LEWE_PRAWA")
     permit = config.get("permit", None)
-    interrupt_step = config.get("interrupt", None) # Dla testów bezpieczeństwa
+    interrupt_step = config.get("interrupt", None) 
 
     print(f"\n=======================================================")
     print(f">>> TEST NR: {iter_num} | {name}")
     
-    # Zmiana trybu jeśli jest wymagana
     if current_mode != req_mode:
         print(f"Ustawianie trybu: {req_mode}")
         mode_set(req_mode)
@@ -246,29 +241,25 @@ def execute_custom_sequence(iter_num, config):
     global right_counter, left_counter
     start_r, start_l = get_counters(1)
 
-    # Dodawanie autoryzacji jeśli test tego wymaga (Tryb Kontrolowany)
     if permit:
         print(f"Nadawanie uprawnienia dla: {permit}")
         add_permission(permit)
 
-    # Wkroczenie w sekwencje czujników
     for index, sensor in enumerate(seq):
         jlink.rtt_write(0, f'sensor {sensor} 1\n'.encode('utf-8'))
         time.sleep(POKE_DELAY_TIME)
         
-        # SPECJALNY TEST BEZPIECZEŃSTWA (Naruszenie w trakcie ruchu)
+        # Test bezpieczeństwa (np. antyzgnieceniowy podczas ruchu)
         if interrupt_step and index == interrupt_step["after_index"]:
-            print(f"[!] WYWOŁANIE ALARMU: Włożenie obiektu na czujnik {interrupt_step['sensor']} w trakcie ruchu!")
+            print(f"[!] WYWOŁANIE ALARMU: Naruszenie czujnika {interrupt_step['sensor']} w trakcie ruchu!")
             jlink.rtt_write(0, f'sensor {interrupt_step["sensor"]} 1\n'.encode('utf-8'))
             time.sleep(0.5)
-            # Powinno wywalić safety alarm
             check_for_log_bool(LOG_ALARM_SAFETY, 2)
             jlink.rtt_write(0, f'sensor {interrupt_step["sensor"]} 0\n'.encode('utf-8'))
 
         jlink.rtt_write(0, f'sensor {sensor} 0\n'.encode('utf-8'))
         time.sleep(POKE_DELAY_EXIT_TIME)
 
-    # Weryfikacja oczekiwanego zachowania logiki (Zamknięcie / Alarm)
     if expected_log:
         found = check_for_log_bool(expected_log, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
         if not found:
@@ -279,7 +270,6 @@ def execute_custom_sequence(iter_num, config):
     
     time.sleep(1) 
     
-    # Sprawdzanie zgodności liczników
     end_r, end_l = get_counters(1)
     total_start = start_r + start_l
     total_end = end_r + end_l
@@ -293,73 +283,62 @@ def execute_custom_sequence(iter_num, config):
             print(f"SUKCES: Licznik poprawnie wzrósł (Obecnie: L:{left_counter}, R:{right_counter})")
     else:
         if total_end > total_start:
-            print("BŁĄD: System niesłusznie zliczył przejście (np. podczas alarmu/wycofania)! - TEST FAILED")
+            print("BŁĄD: System niesłusznie zliczył przejście (np. podczas alarmu)! - TEST FAILED")
             sys.exit(1)
         else:
-            print("SUKCES: System poprawnie zignorował nieudane przejście (brak zliczenia).")
-
+            print("SUKCES: System poprawnie zignorował nieudane przejście.")
 
 # =========================================================
-# GENERATOR BAZY TESTÓW BEHAWIORALNYCH (Z TRYBAMI)
+# GENERATOR BAZY TESTÓW BEHAWIORALNYCH
 # =========================================================
 def generate_100_scenarios():
     scenarios = []
 
-    # [1-20] WOLNE LEWE PRAWA: Standardowe i wahania
+    # [1-20] WOLNE LEWE PRAWA
     for i in range(10):
         seq_lp = [LEFT_SENSOR] * ((i % 2) + 1) + [LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR]
         scenarios.append({"name": f"WOLNE L->P (wahanie {i%2 + 1}x)", "mode": "WOLNE_LEWE_PRAWA", "seq": seq_lp, "log": LOG_GATE_CLOSED, "count": True})
-        
         seq_pl = [RIGHT_SENSOR] * ((i % 2) + 1) + [RIGHT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR]
         scenarios.append({"name": f"WOLNE P->L (wahanie {i%2 + 1}x)", "mode": "WOLNE_LEWE_PRAWA", "seq": seq_pl, "log": LOG_GATE_CLOSED, "count": True})
 
-    # [21-40] KONTROLA LEWE PRAWA: Poprawne autoryzacje i ich brak
+    # [21-40] KONTROLA LEWE PRAWA
     for i in range(10):
-        # Wejście z uprawnieniem
         seq_lp = [LEFT_SENSOR, LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR]
         scenarios.append({"name": "KONTROLA L->P (Z uprawnieniem)", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": seq_lp, "log": LOG_GATE_CLOSED, "count": True})
-        
-        # Odbicie od bramy (brak uprawnienia)
         seq_reject = [LEFT_SENSOR]
         scenarios.append({"name": "KONTROLA L->P (Odbicie, brak upr)", "mode": "KONTROLA_LEWE_PRAWA", "permit": None, "seq": seq_reject, "log": LOG_ALARM_NO_PERMIT, "count": False})
 
-    # [41-55] WOLNE LEWE / KONTROLA PRAWE: Asymetryczność
+    # [41-55] WOLNE LEWE / KONTROLA PRAWE (Asymetria)
     for i in range(15):
         if i % 2 == 0:
             seq = [LEFT_SENSOR, LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR]
             scenarios.append({"name": "ASYMETRIA: Wolne przejście L->P", "mode": "WOLNE_LEWE_KONTROLA_PRAWE", "seq": seq, "log": LOG_GATE_CLOSED, "count": True})
         else:
-            # Wejście P->L wymaga autoryzacji, tu wchodzimy na bezczela i obrywamy alarmem
             seq = [RIGHT_SENSOR]
             scenarios.append({"name": "ASYMETRIA: Brak uprawnień P->L", "mode": "WOLNE_LEWE_KONTROLA_PRAWE", "seq": seq, "log": LOG_ALARM_NO_PERMIT, "count": False})
 
-    # [56-70] ANOMALIE: Wycofania (Zrezygnował mimo autoryzacji lub w wolnym)
+    # [56-70] ANOMALIE: Wycofania
     for i in range(15):
         seq = [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR]
         scenarios.append({"name": "Wycofanie po wejściu", "mode": "WOLNE_LEWE_PRAWA", "seq": seq, "log": LOG_GATE_CLOSED, "count": False})
 
-    # [71-85] ANOMALIE: Intruz, Tailgating (jazda na ogonie), Czołganie
+    # [71-85] ANOMALIE: Intruz, Tailgating, Czołganie
     for i in range(15):
         if i % 3 == 0:
-            # Intruz - ręka od razu na środek
             seq = [CENTER_SECURITY_SENSOR]
             scenarios.append({"name": "Wtargnięcie w światło bramki", "mode": "WOLNE_LEWE_PRAWA", "seq": seq, "log": LOG_ALARM_INTRUSION, "count": False})
         elif i % 3 == 1:
-            # Tailgating
             seq = [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR]
-            scenarios.append({"name": "Próba jazdy na ogonie", "mode": "WOLNE_LEWE_PRAWA", "seq": seq, "log": LOG_ALARM_TAILGATING, "count": True}) # Pierwszy przejdzie
+            scenarios.append({"name": "Próba jazdy na ogonie", "mode": "WOLNE_LEWE_PRAWA", "seq": seq, "log": LOG_ALARM_TAILGATING, "count": True})
         else:
-            # Czołganie - tylko dolne
             seq = [LEFT_DOWN_SENSOR, RIGHT_DOWN_SENSOR]
             scenarios.append({"name": "Czołganie pod szybami", "mode": "WOLNE_LEWE_PRAWA", "seq": seq, "log": "", "count": False})
 
-    # [86-100] TESTY BEZPIECZEŃSTWA: Naruszenie w trakcie ruchu skrzydeł (Anti-crush)
+    # [86-100] TESTY BEZPIECZEŃSTWA: Naruszenie w trakcie ruchu (Anti-crush)
     for i in range(15):
-        # Brama otwiera się od lewej (indeks 0), po czym podczas ruchu wzbudzamy np. czujnik środkowy bezpieczeństwa
         seq = [LEFT_SENSOR, LEFT_SECURITY_SENSOR]
         interrupt = {"after_index": 0, "sensor": CENTER_SECURITY_SENSOR}
-        # Spodziewamy się, że brama zgłosi SAFETY ALARM z powodu naruszenia pola pracy
-        scenarios.append({"name": "ANTI-CRUSH: Naruszenie czujników w trakcie ruchu", "mode": "WOLNE_LEWE_PRAWA", "seq": seq, "interrupt": interrupt, "log": LOG_ALARM_SAFETY, "count": False})
+        scenarios.append({"name": "ANTI-CRUSH: Naruszenie w trakcie ruchu", "mode": "WOLNE_LEWE_PRAWA", "seq": seq, "interrupt": interrupt, "log": LOG_ALARM_SAFETY, "count": False})
 
     return scenarios
 
@@ -385,14 +364,12 @@ time.sleep(2)
 
 # >>>>>>>>>>>>> PRE-FLIGHT CHECKS >>>>>>>>>>>>>
 test_calibration_read_only()
-# --- NOWY DYNAMICZNY TEST ---
 test_find_optimal_torque()
 
 # >>>>>>>>>>>>> SETUP PRZED GŁÓWNĄ PĘTLĄ >>>>>>>>>>>>>
 mode_set("WOLNE_LEWE_PRAWA")
 right_counter, left_counter = get_counters(1)
 
-# Inicjalizacja puli inteligentnych testów
 scenarios_pool = generate_100_scenarios()
 
 print(f"\n=======================================================")
@@ -402,18 +379,15 @@ print(f"=======================================================\n")
 # >>>>>>>>>>>>> GŁÓWNA PĘTLA WYKONAWCZA >>>>>>>>>>>>>
 count = 0
 while True:
-    # Wybieramy konkretny słownik konfiguracji z naszej puli (modulo)
     current_scenario = scenarios_pool[count % len(scenarios_pool)]
     
     execute_custom_sequence(count + 1, current_scenario)
     
     count += 1
     
-    # Co 15 cykli odpytujemy diagnostykę w tle
     if count % 15 == 0:
         test_diagnostics_counters()
 
-    # Zakończenie jeśli osiągnęliśmy limit i nie mamy Infinite Mode
     if not IS_INFINITE and count >= NUMBER_OF_TESTS:
         break
 
