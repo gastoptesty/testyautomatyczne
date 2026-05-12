@@ -43,7 +43,7 @@ LOG_GATE_OPENED = "Permit manager: GATE OPENED"
 LOG_GATE_CLOSED = "Permit manager: GATE CLOSED"
 LOG_ALARM_INTRUSION = "ALARM INTRUSION"       
 LOG_ALARM_TAILGATING = "ALARM TAILGATING"     
-LOG_MOTOR_ERROR = "GATE ERROR - MOTOR BLOCKED"               
+LOG_MOTOR_ERROR = "MOTOR ERROR"               
 LOG_ALARM_NO_PERMIT = "ALARM NO PERMIT"       
 LOG_ALARM_SAFETY = "SAFETY ALARM"             
 
@@ -83,13 +83,13 @@ def check_for_log_bool(log, timeout_sec):
     return False
 
 def sensor_poke(num):
-    jlink.rtt_write(0, 'sensor {} 1\n'.format(num).encode('utf-8'))
+    jlink.rtt_write(0, 'sensor {} 1\r\n'.format(num).encode('utf-8'))
     time.sleep(POKE_DELAY_TIME)
-    jlink.rtt_write(0, 'sensor {} 0\n'.format(num).encode('utf-8'))
+    jlink.rtt_write(0, 'sensor {} 0\r\n'.format(num).encode('utf-8'))
     time.sleep(POKE_DELAY_EXIT_TIME)
 
 def reset():
-    jlink.rtt_write(0, b'reset\n')
+    jlink.rtt_write(0, b'reset\r\n')
     time.sleep(0.5)
 
 def mode_set(mode):
@@ -99,7 +99,7 @@ def mode_set(mode):
         "KONTROLA_LEWE_PRAWA", "BLOKADA_LEWE_PRAWA", "BEZ_BLOKADY_LEWE_PRAWA"
     ]
     if mode in strings_table:
-        jlink.rtt_write(0, 'mode {}\n'.format(strings_table.index(mode)).encode('utf-8'))
+        jlink.rtt_write(0, 'mode {}\r\n'.format(strings_table.index(mode)).encode('utf-8'))
         time.sleep(0.5)
         current_mode = mode
     else:
@@ -109,13 +109,13 @@ def mode_set(mode):
 
 def add_permission(direction):
     if direction == "L":
-        jlink.rtt_write(0, b'add_l\n')
+        jlink.rtt_write(0, b'add_l\r\n')
     elif direction == "R":
-        jlink.rtt_write(0, b'add_r\n')
+        jlink.rtt_write(0, b'add_r\r\n')
     time.sleep(0.2)
 
 def get_counters(timeout_sec=1.0):
-    jlink.rtt_write(0, b'counter\n')
+    jlink.rtt_write(0, b'counter\r\n')
     time.sleep(0.1)
     rtt = ''
     start_time_c = time.time()
@@ -140,7 +140,7 @@ def get_counters(timeout_sec=1.0):
 # FUNKCJE RTT (GET / SET / VERIFY)
 # =========================================================
 def rtt_get_param(idx, timeout_sec=1.0):
-    jlink.rtt_write(0, 'get {}\n'.format(idx).encode('utf-8'))
+    jlink.rtt_write(0, 'get {}\r\n'.format(idx).encode('utf-8'))
     start_t = time.time()
     rtt = ''
     while time.time() - start_t < timeout_sec:
@@ -150,28 +150,44 @@ def rtt_get_param(idx, timeout_sec=1.0):
     return rtt
 
 def rtt_set_and_verify(idx, val):
-    """ Wymusza zapis parametru i nie puszcza dalej, dopoki brama nie potwierdzi cyfra, ze go zmienila """
+    """ Ustawia parametr udajac fizyczna klawiature i weryfikuje zapis w bramce. """
     for attempt in range(5):
-        # Oczyszczenie bufora wprowadzania bramki
-        jlink.rtt_write(0, b'\n')
-        time.sleep(0.1)
+        # 1. Agresywne czyszczenie bufora odczytu ze smieci
+        try:
+            jlink.rtt_read(0, 4096)
+        except:
+            pass
+
+        # 2. Wyslanie komendy SET ZNAK PO ZNAKU (chroni przed ucieciem komendy w buforze)
+        cmd_set = 'set {} {}\r\n'.format(idx, val)
+        for char in cmd_set:
+            jlink.rtt_write(0, char.encode('utf-8'))
+            time.sleep(0.02) # Piszemy bardzo wolno
+            
+        time.sleep(1.5) # Czekamy bardzo dlugo na przeslanie zapisu na plyte silnika (Slave)
         
-        # Wyslanie fizycznej komendy zmiany
-        jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
-        time.sleep(0.8) # Dla parametru Remote (EE slave) czekamy dluzej az zsynchronizuje sie szyna
-        
-        # Zapytanie weryfikacyjne
-        jlink.rtt_write(0, 'get {}\n'.format(idx).encode('utf-8'))
+        # 3. Znowu czyscimy bufor z wlasnego "echa" wpisywania set
+        try:
+            jlink.rtt_read(0, 4096)
+        except:
+            pass
+            
+        # 4. Zapytanie weryfikacyjne GET
+        cmd_get = 'get {}\r\n'.format(idx)
+        for char in cmd_get:
+            jlink.rtt_write(0, char.encode('utf-8'))
+            time.sleep(0.02)
+            
         start_t = time.time()
         rtt = ''
         
         while time.time() - start_t < 1.0:
             char = jlink.rtt_read(0, 1)
-            if len(char) == 1:
+            if char and len(char) == 1:
                 rtt += chr(char[0])
                 
-        # Zeby parser nie czytal "echa" naszych komend wpisywanych w RTT:
-        clean_rtt = rtt.replace('set {} {}'.format(idx, val), '').replace('get {}'.format(idx), '')
+        # 5. Ekstrakcja liczby z odpowiedzi bramki (usuwamy z niej wpisywane "get" i sam "indeks")
+        clean_rtt = rtt.replace('get', '').replace(str(idx), '')
         digits = re.findall(r'\d+', clean_rtt)
         
         if digits:
@@ -179,9 +195,11 @@ def rtt_set_and_verify(idx, val):
             if read_val == val:
                 return True
             else:
-                print("   [SYNC] Ustawiono {}, ale bramka mowi, ze ma {}. Ponawiam...".format(val, read_val))
+                print("   [SYNC FAIL] Chciano ustawic {}, ale bramka zwrocila {}. Ponawiam...".format(val, read_val))
+                print("   [DEBUG RTT] Surowa odpowiedz bramki: {}".format(repr(rtt)))
         else:
-            print("   [SYNC] Brak czytelnej odpowiedzi. Ponawiam...")
+            print("   [SYNC FAIL] Brak jasnej liczbowej odpowiedzi bramki. Ponawiam...")
+            print("   [DEBUG RTT] Surowa odpowiedz bramki: {}".format(repr(rtt)))
             
     return False
 
@@ -244,7 +262,7 @@ def test_find_optimal_torque():
             reason = "MOTOR ERROR" if result == "ERROR" else "TIMEOUT"
             print("   [X] Moment {} OBLAL TEST ({}). Robie bezpieczny reset...".format(tq, reason))
             
-            jlink.rtt_write(0, b'reset\n')
+            jlink.rtt_write(0, b'reset\r\n')
             time.sleep(3) 
             
             try:
@@ -254,7 +272,7 @@ def test_find_optimal_torque():
             except:
                 pass
                 
-            jlink.rtt_write(0, b'mode 3\n')
+            jlink.rtt_write(0, b'mode 3\r\n')
             time.sleep(1) 
             
         elif result == "OPENED":
@@ -325,17 +343,17 @@ def execute_custom_sequence(iter_num, config):
         add_permission(permit)
 
     for index, sensor in enumerate(seq):
-        jlink.rtt_write(0, 'sensor {} 1\n'.format(sensor).encode('utf-8'))
+        jlink.rtt_write(0, 'sensor {} 1\r\n'.format(sensor).encode('utf-8'))
         time.sleep(POKE_DELAY_TIME)
         
         if interrupt_step and index == interrupt_step["after_index"]:
             print("[!] WYWOLANIE ALARMU: Naruszenie czujnika {} w trakcie ruchu!".format(interrupt_step['sensor']))
-            jlink.rtt_write(0, 'sensor {} 1\n'.format(interrupt_step["sensor"]).encode('utf-8'))
+            jlink.rtt_write(0, 'sensor {} 1\r\n'.format(interrupt_step["sensor"]).encode('utf-8'))
             time.sleep(0.5)
             check_for_log_bool(LOG_ALARM_SAFETY, 2)
-            jlink.rtt_write(0, 'sensor {} 0\n'.format(interrupt_step["sensor"]).encode('utf-8'))
+            jlink.rtt_write(0, 'sensor {} 0\r\n'.format(interrupt_step["sensor"]).encode('utf-8'))
 
-        jlink.rtt_write(0, 'sensor {} 0\n'.format(sensor).encode('utf-8'))
+        jlink.rtt_write(0, 'sensor {} 0\r\n'.format(sensor).encode('utf-8'))
         time.sleep(POKE_DELAY_EXIT_TIME)
 
     if expected_log:
