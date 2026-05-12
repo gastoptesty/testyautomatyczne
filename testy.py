@@ -185,18 +185,16 @@ def test_find_optimal_torque():
         time.sleep(POKE_DELAY_TIME)
         jlink.rtt_write(0, f'sensor {LEFT_SENSOR} 0\n'.encode('utf-8'))
         
-        # Nasłuchujemy obu logów na raz
         rtt_buffer = ''
         start_t = time.time()
         result = "TIMEOUT"
         
-        # Czekamy max 5 sekund na reakcję bramki
-        while time.time() - start_t < 5.0:
+        # Czekamy max 4 sekundy na reakcję bramki
+        while time.time() - start_t < 4.0:
             char = jlink.rtt_read(0, 1)
             if len(char) == 1:
                 rtt_buffer += chr(char[0])
                 
-                # Wyłapujemy co przyszło jako pierwsze
                 if LOG_MOTOR_ERROR in rtt_buffer:
                     result = "ERROR"
                     break
@@ -206,21 +204,31 @@ def test_find_optimal_torque():
         
         if result == "ERROR" or result == "TIMEOUT":
             if result == "ERROR":
-                print(f"   [!] Moment {tq} jest za słaby (MOTOR ERROR). Twardy reset...")
+                print(f"   [!] Moment {tq} za słaby (MOTOR ERROR). Robię bezpieczny reset...")
             else:
-                print(f"   [!] Moment {tq} nie wywołał ruchu (TIMEOUT). Twardy reset...")
+                print(f"   [!] Moment {tq} nie wywołał ruchu (TIMEOUT). Robię bezpieczny reset...")
             
-            # TWARDY RESET - najbardziej niezawodny, upewnia nas że brama wraca do żywych
-            jlink.restart()
-            wait_for_logs("MODE:", 8) # Zwiększony czas oczekiwania do 8 sekund
-            mode_set("WOLNE_LEWE_PRAWA")
-            time.sleep(1) # Chwila na ustabilizowanie logiki przed kolejną próbą
+            # Wysłanie komendy reset
+            jlink.rtt_write(0, b'reset\n')
+            time.sleep(3) # Czekamy w ciemno 3 sekundy na start procesora
+            
+            # Prewencyjny restart połączenia RTT po stronie J-Linka
+            try:
+                jlink.rtt_stop()
+                time.sleep(0.2)
+                jlink.rtt_start()
+            except:
+                pass
+                
+            # Wymuszamy tryb roboczy w ciemno (mode 0 to WOLNE_LEWE_PRAWA)
+            jlink.rtt_write(0, b'mode 0\n')
+            time.sleep(1) # Chwila dla logiki na ustawienie trybu
             
         elif result == "OPENED":
             print(f"   [OK] Znaleziono optymalny, bezpieczny moment roboczy: {tq}")
             optimal_torque = tq
             
-            # Skoro bramka się otworzyła, zamykamy cykl
+            # Skoro bramka się otworzyła, musimy przejść przez resztę czujników, żeby ją zamknąć
             sensor_poke(LEFT_SECURITY_SENSOR)
             sensor_poke(CENTER_SECURITY_SENSOR)
             sensor_poke(RIGHT_SECURITY_SENSOR)
