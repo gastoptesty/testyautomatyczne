@@ -182,32 +182,55 @@ def test_find_optimal_torque():
         
         # Próba otwarcia
         jlink.rtt_write(0, f'sensor {LEFT_SENSOR} 1\n'.encode('utf-8'))
-        time.sleep(0.5)
+        time.sleep(POKE_DELAY_TIME)
         jlink.rtt_write(0, f'sensor {LEFT_SENSOR} 0\n'.encode('utf-8'))
         
-        has_error = check_for_log_bool(LOG_MOTOR_ERROR, 3)
+        # Zamiast dwóch osobnych sprawdzeń, nasłuchujemy obu logów na raz
+        rtt_buffer = ''
+        start_t = time.time()
+        result = "TIMEOUT"
         
-        if has_error:
-            print(f"   [!] Moment {tq} jest za słaby. Brama wywaliła błąd. Resetuję i zwiększam...")
+        # Czekamy max 5 sekund na reakcję bramki
+        while time.time() - start_t < 5.0:
+            char = jlink.rtt_read(0, 1)
+            if len(char) == 1:
+                rtt_buffer += chr(char[0])
+                
+                # Wyłapujemy co przyszło jako pierwsze
+                if LOG_MOTOR_ERROR in rtt_buffer:
+                    result = "ERROR"
+                    break
+                elif LOG_GATE_OPENED in rtt_buffer:
+                    result = "OPENED"
+                    break
+        
+        if result == "ERROR":
+            print(f"   [!] Moment {tq} jest za słaby (MOTOR ERROR). Resetuję...")
             reset()
             wait_for_logs("MODE:", 3)
             mode_set("WOLNE_LEWE_PRAWA")
-        else:
-            has_opened = check_for_log_bool(LOG_GATE_OPENED, 2)
-            if has_opened or not has_error:
-                print(f"   [OK] Znaleziono optymalny, bezpieczny moment roboczy: {tq}")
-                optimal_torque = tq
-                
-                # Zamykamy cykl, żeby skrzydła wróciły do pozycji 0
-                sensor_poke(LEFT_SECURITY_SENSOR)
-                sensor_poke(CENTER_SECURITY_SENSOR)
-                sensor_poke(RIGHT_SECURITY_SENSOR)
-                sensor_poke(RIGHT_SENSOR)
-                wait_for_logs(LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
-                break
+            
+        elif result == "TIMEOUT":
+            print(f"   [!] Moment {tq} nie wywołał ruchu i nie wyrzucił błędu (TIMEOUT). Resetuję...")
+            reset()
+            wait_for_logs("MODE:", 3)
+            mode_set("WOLNE_LEWE_PRAWA")
+            
+        elif result == "OPENED":
+            print(f"   [OK] Znaleziono optymalny, bezpieczny moment roboczy: {tq}")
+            optimal_torque = tq
+            
+            # Skoro bramka się otworzyła, musimy przejść przez resztę czujników, żeby ją zamknąć
+            sensor_poke(LEFT_SECURITY_SENSOR)
+            sensor_poke(CENTER_SECURITY_SENSOR)
+            sensor_poke(RIGHT_SECURITY_SENSOR)
+            sensor_poke(RIGHT_SENSOR)
+            
+            wait_for_logs(LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
+            break
 
     if optimal_torque == -1:
-        print("BŁĄD KRYTYCZNY: Nawet na maksymalnym momencie obrotowym brama nie może ruszyć!")
+        print("BŁĄD KRYTYCZNY: Nawet na maksymalnym momencie obrotowym brama nie może poprawnie ruszyć!")
         sys.exit(1)
 
 def test_diagnostics_counters():
