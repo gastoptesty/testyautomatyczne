@@ -176,11 +176,18 @@ def test_find_optimal_torque():
     print("\n[PRE-CHECK] Dynamiczne szukanie optymalnego momentu obrotowego (Max Torque)...")
     optimal_torque = -1
     
-    for tq in range(0, 21):
+    # Upewniamy się, że przed testem jesteśmy w odpowiednim trybie
+    mode_set("WOLNE_LEWE_PRAWA")
+    time.sleep(1)
+    
+    # ZACZYNAMY OD 1! Wartość 0 wyłącza pomiar, więc jej nie testujemy.
+    for tq in range(1, 21):
         print(f"-> Testuję moment obrotowy na poziomie: {tq}")
         rtt_set_param(28, tq)
+        time.sleep(0.5) # Dajemy chwilę mikrokontrolerowi na zapisanie parametru
         
-        # Próba otwarcia
+        # Wywołujemy fizyczny ruch skrzydeł, żeby przetestować aktualny próg momentu
+        print("   Wymuszam otwarcie bramki (lewy czujnik), aby sprawdzić opór...")
         jlink.rtt_write(0, f'sensor {LEFT_SENSOR} 1\n'.encode('utf-8'))
         time.sleep(POKE_DELAY_TIME)
         jlink.rtt_write(0, f'sensor {LEFT_SENSOR} 0\n'.encode('utf-8'))
@@ -206,7 +213,7 @@ def test_find_optimal_torque():
             if result == "ERROR":
                 print(f"   [!] Moment {tq} za słaby (MOTOR ERROR). Robię bezpieczny reset...")
             else:
-                print(f"   [!] Moment {tq} nie wywołał ruchu (TIMEOUT). Robię bezpieczny reset...")
+                print(f"   [!] Moment {tq} nie wywołał pełnego ruchu (TIMEOUT). Robię bezpieczny reset...")
             
             # Wysłanie komendy reset
             jlink.rtt_write(0, b'reset\n')
@@ -220,9 +227,9 @@ def test_find_optimal_torque():
             except:
                 pass
                 
-            # Wymuszamy tryb roboczy w ciemno (mode 0 to WOLNE_LEWE_PRAWA)
+            # Wymuszamy ponownie tryb roboczy przed kolejnym tq
             jlink.rtt_write(0, b'mode 0\n')
-            time.sleep(1) # Chwila dla logiki na ustawienie trybu
+            time.sleep(1) 
             
         elif result == "OPENED":
             print(f"   [OK] Znaleziono optymalny, bezpieczny moment roboczy: {tq}")
