@@ -176,21 +176,18 @@ def test_find_optimal_torque():
     print("\n[PRE-CHECK] Dynamiczne szukanie optymalnego momentu obrotowego (Max Torque)...")
     optimal_torque = -1
     
-    # Upewniamy się, że przed testem jesteśmy w odpowiednim trybie
-    mode_set("WOLNE_LEWE_PRAWA")
+    # Zmieniamy na najczęściej używany tryb: KONTROLA obu stron
+    mode_set("KONTROLA_LEWE_PRAWA")
     time.sleep(1)
     
-    # ZACZYNAMY OD 1! Wartość 0 wyłącza pomiar, więc jej nie testujemy.
     for tq in range(1, 21):
         print(f"-> Testuję moment obrotowy na poziomie: {tq}")
         rtt_set_param(28, tq)
-        time.sleep(0.5) # Dajemy chwilę mikrokontrolerowi na zapisanie parametru
+        time.sleep(0.5) 
         
-        # Wywołujemy fizyczny ruch skrzydeł, żeby przetestować aktualny próg momentu
-        print("   Wymuszam otwarcie bramki (lewy czujnik), aby sprawdzić opór...")
-        jlink.rtt_write(0, f'sensor {LEFT_SENSOR} 1\n'.encode('utf-8'))
-        time.sleep(POKE_DELAY_TIME)
-        jlink.rtt_write(0, f'sensor {LEFT_SENSOR} 0\n'.encode('utf-8'))
+        # Wywołujemy fizyczny ruch skrzydeł poprzez sygnał otwarcia (zamiast czujnika)
+        print("   Wymuszam otwarcie bramki sygnałem autoryzacji w lewo (add_l)...")
+        add_permission("L")
         
         rtt_buffer = ''
         start_t = time.time()
@@ -227,15 +224,16 @@ def test_find_optimal_torque():
             except:
                 pass
                 
-            # Wymuszamy ponownie tryb roboczy przed kolejnym tq
-            jlink.rtt_write(0, b'mode 0\n')
+            # Wymuszamy ponownie tryb KONTROLA w ciemno (mode 3 to KONTROLA_LEWE_PRAWA w Twojej tabeli)
+            jlink.rtt_write(0, b'mode 3\n')
             time.sleep(1) 
             
         elif result == "OPENED":
             print(f"   [OK] Znaleziono optymalny, bezpieczny moment roboczy: {tq}")
             optimal_torque = tq
             
-            # Skoro bramka się otworzyła, musimy przejść przez resztę czujników, żeby ją zamknąć
+            # Skoro bramka otworzyła się po sygnale, symulujemy wejście pieszego, żeby ją poprawnie zamknąć
+            sensor_poke(LEFT_SENSOR)
             sensor_poke(LEFT_SECURITY_SENSOR)
             sensor_poke(CENTER_SECURITY_SENSOR)
             sensor_poke(RIGHT_SECURITY_SENSOR)
@@ -247,7 +245,6 @@ def test_find_optimal_torque():
     if optimal_torque == -1:
         print("BŁĄD KRYTYCZNY: Nawet na maksymalnym momencie obrotowym brama nie może poprawnie ruszyć!")
         sys.exit(1)
-
 def test_diagnostics_counters():
     print("\n[TŁO] Sprawdzanie liczników diagnostycznych w tle...")
     response = rtt_get_param(60) 
