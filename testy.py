@@ -185,7 +185,7 @@ def test_find_optimal_torque():
         time.sleep(POKE_DELAY_TIME)
         jlink.rtt_write(0, f'sensor {LEFT_SENSOR} 0\n'.encode('utf-8'))
         
-        # Zamiast dwóch osobnych sprawdzeń, nasłuchujemy obu logów na raz
+        # Nasłuchujemy obu logów na raz
         rtt_buffer = ''
         start_t = time.time()
         result = "TIMEOUT"
@@ -204,23 +204,23 @@ def test_find_optimal_torque():
                     result = "OPENED"
                     break
         
-        if result == "ERROR":
-            print(f"   [!] Moment {tq} jest za słaby (MOTOR ERROR). Resetuję...")
-            reset()
-            wait_for_logs("MODE:", 3)
-            mode_set("WOLNE_LEWE_PRAWA")
+        if result == "ERROR" or result == "TIMEOUT":
+            if result == "ERROR":
+                print(f"   [!] Moment {tq} jest za słaby (MOTOR ERROR). Twardy reset...")
+            else:
+                print(f"   [!] Moment {tq} nie wywołał ruchu (TIMEOUT). Twardy reset...")
             
-        elif result == "TIMEOUT":
-            print(f"   [!] Moment {tq} nie wywołał ruchu i nie wyrzucił błędu (TIMEOUT). Resetuję...")
-            reset()
-            wait_for_logs("MODE:", 3)
+            # TWARDY RESET - najbardziej niezawodny, upewnia nas że brama wraca do żywych
+            jlink.restart()
+            wait_for_logs("MODE:", 8) # Zwiększony czas oczekiwania do 8 sekund
             mode_set("WOLNE_LEWE_PRAWA")
+            time.sleep(1) # Chwila na ustabilizowanie logiki przed kolejną próbą
             
         elif result == "OPENED":
             print(f"   [OK] Znaleziono optymalny, bezpieczny moment roboczy: {tq}")
             optimal_torque = tq
             
-            # Skoro bramka się otworzyła, musimy przejść przez resztę czujników, żeby ją zamknąć
+            # Skoro bramka się otworzyła, zamykamy cykl
             sensor_poke(LEFT_SECURITY_SENSOR)
             sensor_poke(CENTER_SECURITY_SENSOR)
             sensor_poke(RIGHT_SECURITY_SENSOR)
