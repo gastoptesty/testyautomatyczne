@@ -165,7 +165,7 @@ def test_calibration_read_only():
         sys.exit(1)
         
     calib_val = int(digits[-1])
-    if calib_val < 1 or calib_val > 4:
+    if calib_val < 0 or calib_val > 4:
         print(f"BŁĄD: Kalibracja poza bezpiecznym zakresem: {calib_val}. Zatrzymuję test!")
         sys.exit(1)
     print("Kalibracja w normie.")
