@@ -173,27 +173,30 @@ def test_calibration_read_only():
     print(f"Kalibracja w normie. Odczytana wartość zerowa: {calib_val}")
 
 def test_find_optimal_torque():
-    print("\n[PRE-CHECK] Dynamiczne szukanie optymalnego momentu obrotowego (Max Torque)...")
-    optimal_torque = -1
+    print("\n[PRE-CHECK] Pełne skanowanie parametrów momentu obrotowego (Max Torque 1-20)...")
     
-    # Zmieniamy na najczęściej używany tryb: KONTROLA obu stron
+    # Tryb KONTROLA przed rozpoczęciem skanowania
     mode_set("KONTROLA_LEWE_PRAWA")
     time.sleep(1)
     
+    successful_torques = []
+    
     for tq in range(1, 21):
-        print(f"-> Testuję moment obrotowy na poziomie: {tq}")
+        print(f"\n--- Skanowanie wartości Max Torque: {tq} ---")
+        
+        # 1. Ustawienie sprawdzanego momentu obrotowego
         rtt_set_param(28, tq)
         time.sleep(0.5) 
         
-        # Wywołujemy fizyczny ruch skrzydeł poprzez sygnał otwarcia (zamiast czujnika)
-        print("   Wymuszam otwarcie bramki sygnałem autoryzacji w lewo (add_l)...")
+        # 2. Sygnał otwarcia
+        print(f"   Wymuszam otwarcie bramki w lewo (add_l) dla momentu {tq}...")
         add_permission("L")
         
         rtt_buffer = ''
         start_t = time.time()
         result = "TIMEOUT"
         
-        # Czekamy max 4 sekundy na reakcję bramki
+        # 3. Nasłuch reakcji bramki
         while time.time() - start_t < 4.0:
             char = jlink.rtt_read(0, 1)
             if len(char) == 1:
@@ -206,17 +209,16 @@ def test_find_optimal_torque():
                     result = "OPENED"
                     break
         
+        # 4. Obsługa błędu lub braku siły
         if result == "ERROR" or result == "TIMEOUT":
-            if result == "ERROR":
-                print(f"   [!] Moment {tq} za słaby (MOTOR ERROR). Robię bezpieczny reset...")
-            else:
-                print(f"   [!] Moment {tq} nie wywołał pełnego ruchu (TIMEOUT). Robię bezpieczny reset...")
+            reason = "MOTOR ERROR" if result == "ERROR" else "TIMEOUT"
+            print(f"   [X] Moment {tq} OBLAŁ TEST ({reason}). Robię bezpieczny reset...")
             
-            # Wysłanie komendy reset
+            # Reset sprzętowy bramki
             jlink.rtt_write(0, b'reset\n')
-            time.sleep(3) # Czekamy w ciemno 3 sekundy na start procesora
+            time.sleep(3) 
             
-            # Prewencyjny restart połączenia RTT po stronie J-Linka
+            # Restart kanału RTT
             try:
                 jlink.rtt_stop()
                 time.sleep(0.2)
@@ -224,9 +226,44 @@ def test_find_optimal_torque():
             except:
                 pass
                 
-            # Wymuszamy ponownie tryb KONTROLA w ciemno (mode 3 to KONTROLA_LEWE_PRAWA w Twojej tabeli)
+            # Wymuszenie trybu KONTROLA w ciemno po resecie
             jlink.rtt_write(0, b'mode 3\n')
             time.sleep(1) 
+            
+        # 5. Obsługa sukcesu
+        elif result == "OPENED":
+            print(f"   [V] Moment {tq} ZALICZYŁ TEST! Brama w pełni otwarta.")
+            successful_torques.append(tq)
+            
+            # Przeprowadzamy wirtualnego pieszego, żeby fizycznie zamknąć skrzydła
+            sensor_poke(LEFT_SENSOR)
+            sensor_poke(LEFT_SECURITY_SENSOR)
+            sensor_poke(CENTER_SECURITY_SENSOR)
+            sensor_poke(RIGHT_SECURITY_SENSOR)
+            sensor_poke(RIGHT_SENSOR)
+            
+            wait_for_logs(LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
+            time.sleep(1) # Chwila oddechu dla mechaniki przed testem kolejnego progu
+
+    # ===============================================
+    # PODSUMOWANIE I WYBÓR OPTYMALNEGO PARAMETRU
+    # ===============================================
+    if not successful_torques:
+        print("\nBŁĄD KRYTYCZNY: Na żadnym momencie obrotowym (1-20) brama nie ruszyła poprawnie!")
+        sys.exit(1)
+        
+    optimal_torque = min(successful_torques)
+    
+    print(f"\n=======================================================")
+    print(f" RAPORT SKANOWANIA MOMENTU OBROTOWEGO:")
+    print(f" Działające wartości (bez błędu silnika): {successful_torques}")
+    print(f" Najmniejszy działający próg: {optimal_torque}")
+    print(f"=======================================================\n")
+    
+    # 6. Ostateczne utrwalenie optymalnej wartości
+    print(f"-> Aplikowanie optymalnego momentu ({optimal_torque}) na resztę testów...")
+    rtt_set_param(28, optimal_torque)
+    time.sleep(1)
             
         elif result == "OPENED":
             print(f"   [OK] Znaleziono optymalny, bezpieczny moment roboczy: {tq}")
