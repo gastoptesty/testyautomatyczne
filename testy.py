@@ -224,21 +224,23 @@ def test_calibration_read_only():
 def test_find_optimal_torque():
     print("\n[PRE-CHECK] Pelne skanowanie parametrow momentu obrotowego (Max Torque 1-20)...")
     
-    mode_set("KONTROLA_LEWE_PRAWA")
-    time.sleep(1)
-    
     successful_torques = []
     
     for tq in range(1, 21):
         print("\n--- Skanowanie wartosci Max Torque: {} ---".format(tq))
         
-        # BEZPIECZNE USTAWIENIE PARAMETRU Z WERYFIKACJA
+        # 1. NAJPIERW USTAWIANIE PARAMETRU (zanim uruchomimy jakikolwiek tryb roboczy)
         if not rtt_set_and_verify(28, tq):
             print("BLAD KRYTYCZNY: Nie udalo sie fizycznie przestawic momentu obrotowego na {}!".format(tq))
             sys.exit(1)
             
-        print("   [OK] Bramka potwierdzila zapis momentu ({}). Wymuszam ruch skrzydla (add_l)...".format(tq))
+        print("   [OK] Bramka potwierdzila zapis momentu ({}). Uruchamiam logike...".format(tq))
         
+        # 2. DOPIERO TERAZ AKTYWUJEMY TRYB ROBOCZY (KONTROLA)
+        mode_set("KONTROLA_LEWE_PRAWA")
+        time.sleep(1)
+        
+        print("   Wymuszam ruch skrzydla (add_l)...")
         # Test fizycznego oporu
         add_permission("L")
         
@@ -262,6 +264,8 @@ def test_find_optimal_torque():
             reason = "MOTOR ERROR" if result == "ERROR" else "TIMEOUT"
             print("   [X] Moment {} OBLAL TEST ({}). Robie bezpieczny reset...".format(tq, reason))
             
+            # Robimy czysty reset i NIE wrzucamy tu "mode 3" z powrotem.
+            # Brama musi wstac "czysta", zeby na poczatku kolejnej petli znów przyjąć nowe "set 28"
             jlink.rtt_write(0, b'reset\r\n')
             time.sleep(3) 
             
@@ -271,9 +275,6 @@ def test_find_optimal_torque():
                 jlink.rtt_start()
             except:
                 pass
-                
-            jlink.rtt_write(0, b'mode 3\r\n')
-            time.sleep(1) 
             
         elif result == "OPENED":
             print("   [V] Moment {} ZALICZYL TEST! Brama w pelni otwarta.".format(tq))
@@ -286,7 +287,16 @@ def test_find_optimal_torque():
             sensor_poke(RIGHT_SENSOR)
             
             wait_for_logs(LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
-            time.sleep(1)
+            
+            # Po udanym przejściu robimy reset przed sprawdzeniem kolejnego parametru
+            jlink.rtt_write(0, b'reset\r\n')
+            time.sleep(3)
+            try:
+                jlink.rtt_stop()
+                time.sleep(0.2)
+                jlink.rtt_start()
+            except:
+                pass
 
     if not successful_torques:
         print("\nBLAD KRYTYCZNY: Na zadnym momencie obrotowym (1-20) brama nie ruszyla poprawnie!")
@@ -306,7 +316,7 @@ def test_find_optimal_torque():
         print("BLAD KRYTYCZNY: Nie mozna zaaplikowac finalnego momentu!")
         sys.exit(1)
     time.sleep(1)
-
+    
 def test_diagnostics_counters():
     print("\n[TLO] Sprawdzanie licznikow diagnostycznych w tle...")
     response = rtt_get_param(60) 
