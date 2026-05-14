@@ -1,3 +1,4 @@
+cat << 'EOF' > /home/admin/HIL_Project/testy.py
 import pylink
 import re
 import time
@@ -56,45 +57,37 @@ def play_beep(freq, duration):
         winsound.Beep(freq, duration)
 
 def wait_for_logs(log, timeout_sec):
-    rtt_buffer = ''
+    rtt = ''
     start_time_log = time.time()
     while time.time() - start_time_log < timeout_sec:
-        # KLUCZOWA ZMIANA: Czytamy duże bloki danych, a nie po 1 znaku
-        data = jlink.rtt_read(0, 2048) 
-        if data:
-            rtt_buffer += "".join(map(chr, data))
-        if log in rtt_buffer:
+        char = jlink.rtt_read(0, 1)
+        if len(char) == 1:
+            rtt += chr(char[0])
+        if rtt[-len(log):] == log:
             return True
-        time.sleep(0.01) # Dajemy procesorowi odetchnąć
-        
     print("-----------============ LOGS ============-------------")
-    print(rtt_buffer)
+    print(rtt)
     print("-----------========== DIAGNOSE ============-------------")
     print("Timeout reached. Log:'{}' not found. - TEST FAILED".format(log))
     play_beep(440, 500)  
     sys.exit(1)
 
 def check_for_log_bool(log, timeout_sec):
-    rtt_buffer = ''
+    rtt = ''
     start_time_log = time.time()
     while time.time() - start_time_log < timeout_sec:
-        data = jlink.rtt_read(0, 2048)
-        if data:
-            rtt_buffer += "".join(map(chr, data))
-        if log in rtt_buffer:
+        char = jlink.rtt_read(0, 1)
+        if len(char) == 1:
+            rtt += chr(char[0])
+        if rtt[-len(log):] == log:
             return True
-        time.sleep(0.01)
     return False
 
 def sensor_poke(num):
-    jlink.rtt_write(0, 'sensor {} 1\r\n'.format(num).encode('utf-8'))
+    jlink.rtt_write(0, 'sensor {} 1\n'.format(num).encode('utf-8'))
     time.sleep(POKE_DELAY_TIME)
-    jlink.rtt_write(0, 'sensor {} 0\r\n'.format(num).encode('utf-8'))
+    jlink.rtt_write(0, 'sensor {} 0\n'.format(num).encode('utf-8'))
     time.sleep(POKE_DELAY_EXIT_TIME)
-
-def reset():
-    jlink.rtt_write(0, b'reset\r\n')
-    time.sleep(0.5)
 
 def mode_set(mode):
     global current_mode
@@ -103,7 +96,7 @@ def mode_set(mode):
         "KONTROLA_LEWE_PRAWA", "BLOKADA_LEWE_PRAWA", "BEZ_BLOKADY_LEWE_PRAWA"
     ]
     if mode in strings_table:
-        jlink.rtt_write(0, 'mode {}\r\n'.format(strings_table.index(mode)).encode('utf-8'))
+        jlink.rtt_write(0, 'mode {}\n'.format(strings_table.index(mode)).encode('utf-8'))
         time.sleep(0.5)
         current_mode = mode
     else:
@@ -113,27 +106,26 @@ def mode_set(mode):
 
 def add_permission(direction):
     if direction == "L":
-        jlink.rtt_write(0, b'add_l\r\n')
+        jlink.rtt_write(0, b'add_l\n')
     elif direction == "R":
-        jlink.rtt_write(0, b'add_r\r\n')
+        jlink.rtt_write(0, b'add_r\n')
     time.sleep(0.2)
 
 def get_counters(timeout_sec=1.0):
-    jlink.rtt_write(0, b'counter\r\n')
+    jlink.rtt_write(0, b'counter\n')
     time.sleep(0.1)
-    rtt_buffer = ''
+    rtt = ''
     start_time_c = time.time()
     pattern_right = r"right counter:(\d+)"
     pattern_left = r"left counter:(\d+)"
 
     while time.time() - start_time_c < timeout_sec:
-        data = jlink.rtt_read(0, 1024)
-        if data:
-            rtt_buffer += "".join(map(chr, data))
-        time.sleep(0.01)
+        char = jlink.rtt_read(0, 1)
+        if len(char) == 1:
+            rtt += chr(char[0]) 
 
-    matches_r = re.findall(pattern_right, rtt_buffer)
-    matches_l = re.findall(pattern_left, rtt_buffer)
+    matches_r = re.findall(pattern_right, rtt)
+    matches_l = re.findall(pattern_left, rtt)
 
     if matches_r and matches_l:
         right_val = int(matches_r[-1])
@@ -145,83 +137,43 @@ def get_counters(timeout_sec=1.0):
 # FUNKCJE RTT (GET / SET / VERIFY)
 # =========================================================
 def rtt_get_param(idx, timeout_sec=1.0):
-    jlink.rtt_write(0, 'get {}\r\n'.format(idx).encode('utf-8'))
+    jlink.rtt_write(0, 'get {}\n'.format(idx).encode('utf-8'))
     start_t = time.time()
-    rtt_buffer = ''
+    rtt = ''
     while time.time() - start_t < timeout_sec:
-        data = jlink.rtt_read(0, 1024)
-        if data:
-            rtt_buffer += "".join(map(chr, data))
-        time.sleep(0.01)
-    return rtt_buffer
+        char = jlink.rtt_read(0, 1)
+        if len(char) == 1:
+            rtt += chr(char[0])
+    return rtt
 
 def rtt_set_and_verify(idx, val):
-    """ Ustawia parametr i weryfikuje zapis w bramce. Zabezpieczone przed pustym buforem. """
-    for attempt in range(5):
-        # 0. WZBUDZENIE KONSOLI - upewniamy się, że terminal bramki nie wisi na wpół wpisanej komendzie
-        try:
-            jlink.rtt_write(0, b'\r\n')
-            time.sleep(0.1)
-            jlink.rtt_read(0, 4096) # Czyszczenie śmieci
-        except:
-            pass
-
-        # 1. Wyslanie komendy SET W CAŁOŚCI (unikamy time-outów między znakami po stronie bramki)
-        cmd_set = 'set {} {}\r\n'.format(idx, val)
-        try:
-            jlink.rtt_write(0, cmd_set.encode('utf-8'))
-        except:
-            pass
-            
-        time.sleep(1.5) # Czekamy bardzo dlugo na przeslanie zapisu na plyte silnika (Slave)
+    for attempt in range(4):
+        # 1. Wysylamy komende od razu (tak jak dzialalo to od poczatku)
+        jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
+        time.sleep(1.0) # Czekamy sekunde az Master przesle to na Slave'a
         
-        # 2. Czyscimy bufor z echa komendy SET
-        try:
-            jlink.rtt_read(0, 4096)
-        except:
-            pass
-            
-        # 3. Zapytanie weryfikacyjne GET (też w całości)
-        cmd_get = 'get {}\r\n'.format(idx)
-        try:
-            jlink.rtt_write(0, cmd_get.encode('utf-8'))
-        except:
-            pass
-            
-        # 4. Zbieranie paczek z odpowiedzia
-        start_t = time.time()
-        rtt_buffer = ''
+        # 2. Uzywamy niezawodnej, standardowej funkcji get do sprawdzenia
+        resp = rtt_get_param(idx, 1.5)
         
-        # Wydłużamy czas na 2 sekundy dla pewności
-        while time.time() - start_t < 2.0: 
-            try:
-                data = jlink.rtt_read(0, 1024)
-                if data:
-                    rtt_buffer += "".join(map(chr, data))
-                    # Jeśli mamy znak nowej linii, to znaczy że brama skończyła "mówić"
-                    if '\n' in rtt_buffer and len(rtt_buffer.strip()) > 0:
-                        break
-            except:
-                pass
-            time.sleep(0.05)
-            
-        # 5. Ekstrakcja liczby z odpowiedzi
-        clean_rtt = rtt_buffer.replace('get', '').replace(str(idx), '')
-        digits = re.findall(r'\d+', clean_rtt)
+        # Ekstrakcja liczby (zabezpieczenie przed "echem")
+        clean_resp = resp.replace('get {}\n'.format(idx), '')
+        digits = re.findall(r'\d+', clean_resp)
         
         if digits:
             read_val = int(digits[-1])
             if read_val == val:
                 return True
             else:
-                print("   [SYNC FAIL] Chciano ustawic {}, ale bramka zwrocila {}. Ponawiam...".format(val, read_val))
-                print("   [DEBUG RTT] Surowa odpowiedz bramki: {}".format(repr(rtt_buffer)))
+                print("   [SYNC FAIL] Ustawiono {}, ale bramka zglasza {}. Ponawiam...".format(val, read_val))
         else:
-            print("   [SYNC FAIL] Brak jasnej liczbowej odpowiedzi bramki. Ponawiam...")
-            print("   [DEBUG RTT] Surowa odpowiedz bramki: {}".format(repr(rtt_buffer)))
+            print("   [SYNC FAIL] Brak jasnej odpowiedzi (Odebrano: {}). Ponawiam...".format(repr(resp)))
             
+        time.sleep(0.5)
     return False
-    
+
+# =========================================================
+# PRE-FLIGHT CHECKS (Testy i kalibracje)
+# =========================================================
 def test_calibration_read_only():
     print("\n[PRE-CHECK] Sprawdzanie bezpieczenstwa kalibracji...")
     response = rtt_get_param(7)
@@ -245,16 +197,18 @@ def test_find_optimal_torque():
     for tq in range(1, 21):
         print("\n--- Skanowanie wartosci Max Torque: {} ---".format(tq))
         
+        # 1. NAJPIERW USTAWIAMY PARAMETR (Bramka jest swiezo po resecie, nie robi nic innego)
         if not rtt_set_and_verify(28, tq):
             print("BLAD KRYTYCZNY: Nie udalo sie fizycznie przestawic momentu obrotowego na {}!".format(tq))
             sys.exit(1)
             
-        print("   [OK] Bramka potwierdzila zapis momentu ({}). Uruchamiam logike...".format(tq))
+        print("   [OK] Bramka zsynchronizowala parametr. Uruchamiam logike przejscia...")
         
+        # 2. DOPIERO TERAZ AKTYWUJEMY TRYB
         mode_set("KONTROLA_LEWE_PRAWA")
         time.sleep(1)
         
-        print("   Wymuszam ruch skrzydla (add_l)...")
+        print("   Wymuszam probe otwarcia...")
         add_permission("L")
         
         rtt_buffer = ''
@@ -262,9 +216,9 @@ def test_find_optimal_torque():
         result = "TIMEOUT"
         
         while time.time() - start_t < 4.0:
-            data = jlink.rtt_read(0, 1024)
-            if data:
-                rtt_buffer += "".join(map(chr, data))
+            char = jlink.rtt_read(0, 1)
+            if len(char) == 1:
+                rtt_buffer += chr(char[0])
                 
                 if LOG_MOTOR_ERROR in rtt_buffer:
                     result = "ERROR"
@@ -272,15 +226,14 @@ def test_find_optimal_torque():
                 elif LOG_GATE_OPENED in rtt_buffer:
                     result = "OPENED"
                     break
-            time.sleep(0.01)
         
         if result == "ERROR" or result == "TIMEOUT":
             reason = "MOTOR ERROR" if result == "ERROR" else "TIMEOUT"
             print("   [X] Moment {} OBLAL TEST ({}). Robie bezpieczny reset...".format(tq, reason))
             
-            jlink.rtt_write(0, b'reset\r\n')
+            # Wymuszamy restart urzadzenia, zeby znow wejsc w stan "jalowy"
+            jlink.rtt_write(0, b'reset\n')
             time.sleep(3) 
-            
             try:
                 jlink.rtt_stop()
                 time.sleep(0.2)
@@ -289,7 +242,7 @@ def test_find_optimal_torque():
                 pass
             
         elif result == "OPENED":
-            print("   [V] Moment {} ZALICZYL TEST! Brama w pelni otwarta.".format(tq))
+            print("   [V] Moment {} ZALICZYL TEST! Brama otwarta.".format(tq))
             successful_torques.append(tq)
             
             sensor_poke(LEFT_SENSOR)
@@ -300,7 +253,8 @@ def test_find_optimal_torque():
             
             wait_for_logs(LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
             
-            jlink.rtt_write(0, b'reset\r\n')
+            # Reset by wrocic do czystego stanu przed kolejna runda ustawiania momentu
+            jlink.rtt_write(0, b'reset\n')
             time.sleep(3)
             try:
                 jlink.rtt_stop()
@@ -326,7 +280,7 @@ def test_find_optimal_torque():
         print("BLAD KRYTYCZNY: Nie mozna zaaplikowac finalnego momentu!")
         sys.exit(1)
     time.sleep(1)
-    
+
 def test_diagnostics_counters():
     print("\n[TLO] Sprawdzanie licznikow diagnostycznych w tle...")
     response = rtt_get_param(60) 
@@ -363,17 +317,17 @@ def execute_custom_sequence(iter_num, config):
         add_permission(permit)
 
     for index, sensor in enumerate(seq):
-        jlink.rtt_write(0, 'sensor {} 1\r\n'.format(sensor).encode('utf-8'))
+        jlink.rtt_write(0, 'sensor {} 1\n'.format(sensor).encode('utf-8'))
         time.sleep(POKE_DELAY_TIME)
         
         if interrupt_step and index == interrupt_step["after_index"]:
             print("[!] WYWOLANIE ALARMU: Naruszenie czujnika {} w trakcie ruchu!".format(interrupt_step['sensor']))
-            jlink.rtt_write(0, 'sensor {} 1\r\n'.format(interrupt_step["sensor"]).encode('utf-8'))
+            jlink.rtt_write(0, 'sensor {} 1\n'.format(interrupt_step["sensor"]).encode('utf-8'))
             time.sleep(0.5)
             check_for_log_bool(LOG_ALARM_SAFETY, 2)
-            jlink.rtt_write(0, 'sensor {} 0\r\n'.format(interrupt_step["sensor"]).encode('utf-8'))
+            jlink.rtt_write(0, 'sensor {} 0\n'.format(interrupt_step["sensor"]).encode('utf-8'))
 
-        jlink.rtt_write(0, 'sensor {} 0\r\n'.format(sensor).encode('utf-8'))
+        jlink.rtt_write(0, 'sensor {} 0\n'.format(sensor).encode('utf-8'))
         time.sleep(POKE_DELAY_EXIT_TIME)
 
     if expected_log:
@@ -467,10 +421,11 @@ selected_sn = emulators[0].SerialNumber
 jlink.open(serial_no=selected_sn)
 jlink.connect("STM32F030RC", verbose=True)
 jlink.rtt_start()
-jlink.restart()
 
-wait_for_logs("MODE:", 1)
-time.sleep(2)
+# Twardy reset urzadzenia na wejsciu
+jlink.restart()
+print("Czekam 3 sekundy na start procesora po resecie...")
+time.sleep(3)
 
 # >>>>>>>>>>>>> PRE-FLIGHT CHECKS >>>>>>>>>>>>>
 test_calibration_read_only()
@@ -507,3 +462,4 @@ print("\nTest finished successfully - time: {} minutes {:.2f} seconds".format(in
 
 jlink.close()
 sys.exit(0)
+EOF
