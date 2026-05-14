@@ -1,4 +1,3 @@
-cat << 'EOF' > /home/admin/HIL_Project/testy.py
 import pylink
 import re
 import time
@@ -148,14 +147,14 @@ def rtt_get_param(idx, timeout_sec=1.0):
 
 def rtt_set_and_verify(idx, val):
     for attempt in range(4):
-        # 1. Wysylamy komende od razu (tak jak dzialalo to od poczatku)
+        # 1. Wysylamy komende od razu
         jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
         time.sleep(1.0) # Czekamy sekunde az Master przesle to na Slave'a
         
         # 2. Uzywamy niezawodnej, standardowej funkcji get do sprawdzenia
         resp = rtt_get_param(idx, 1.5)
         
-        # Ekstrakcja liczby (zabezpieczenie przed "echem")
+        # Ekstrakcja liczby
         clean_resp = resp.replace('get {}\n'.format(idx), '')
         digits = re.findall(r'\d+', clean_resp)
         
@@ -197,7 +196,7 @@ def test_find_optimal_torque():
     for tq in range(1, 21):
         print("\n--- Skanowanie wartosci Max Torque: {} ---".format(tq))
         
-        # 1. NAJPIERW USTAWIAMY PARAMETR (Bramka jest swiezo po resecie, nie robi nic innego)
+        # 1. NAJPIERW USTAWIAMY PARAMETR (Bramka jest swiezo po resecie)
         if not rtt_set_and_verify(28, tq):
             print("BLAD KRYTYCZNY: Nie udalo sie fizycznie przestawic momentu obrotowego na {}!".format(tq))
             sys.exit(1)
@@ -231,7 +230,6 @@ def test_find_optimal_torque():
             reason = "MOTOR ERROR" if result == "ERROR" else "TIMEOUT"
             print("   [X] Moment {} OBLAL TEST ({}). Robie bezpieczny reset...".format(tq, reason))
             
-            # Wymuszamy restart urzadzenia, zeby znow wejsc w stan "jalowy"
             jlink.rtt_write(0, b'reset\n')
             time.sleep(3) 
             try:
@@ -253,7 +251,6 @@ def test_find_optimal_torque():
             
             wait_for_logs(LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
             
-            # Reset by wrocic do czystego stanu przed kolejna runda ustawiania momentu
             jlink.rtt_write(0, b'reset\n')
             time.sleep(3)
             try:
@@ -462,4 +459,3 @@ print("\nTest finished successfully - time: {} minutes {:.2f} seconds".format(in
 
 jlink.close()
 sys.exit(0)
-EOF
