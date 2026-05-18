@@ -147,14 +147,12 @@ def rtt_get_param(idx, timeout_sec=1.0):
 
 def rtt_set_and_verify(idx, val):
     for attempt in range(4):
-        # 1. Wysylamy komende od razu
+        # Wysylamy komende zapisu
         jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
-        time.sleep(1.0) # Czekamy sekunde az Master przesle to na Slave'a
+        time.sleep(0.5)
         
-        # 2. Uzywamy niezawodnej, standardowej funkcji get do sprawdzenia
+        # Sprawdzamy zapis w Masterze
         resp = rtt_get_param(idx, 1.5)
-        
-        # Ekstrakcja liczby
         clean_resp = resp.replace('get {}\n'.format(idx), '')
         digits = re.findall(r'\d+', clean_resp)
         
@@ -165,7 +163,7 @@ def rtt_set_and_verify(idx, val):
             else:
                 print("   [SYNC FAIL] Ustawiono {}, ale bramka zglasza {}. Ponawiam...".format(val, read_val))
         else:
-            print("   [SYNC FAIL] Brak jasnej odpowiedzi (Odebrano: {}). Ponawiam...".format(repr(resp)))
+            print("   [SYNC FAIL] Brak jasnej odpowiedzi. Ponawiam...")
             
         time.sleep(0.5)
     return False
@@ -196,14 +194,24 @@ def test_find_optimal_torque():
     for tq in range(1, 21):
         print("\n--- Skanowanie wartosci Max Torque: {} ---".format(tq))
         
-        # 1. NAJPIERW USTAWIAMY PARAMETR (Bramka jest swiezo po resecie)
+        # 1. ZAPIS PARAMETRU W MASTERZE
         if not rtt_set_and_verify(28, tq):
-            print("BLAD KRYTYCZNY: Nie udalo sie fizycznie przestawic momentu obrotowego na {}!".format(tq))
+            print("BLAD KRYTYCZNY: Nie udalo sie zapisac momentu w pamieci Mastera!")
             sys.exit(1)
             
-        print("   [OK] Bramka zsynchronizowala parametr. Uruchamiam logike przejscia...")
+        print("   [OK] Zapisano w Masterze. Wymuszam TWARDY RESET, aby zaktualizowac Slave'a...")
         
-        # 2. DOPIERO TERAZ AKTYWUJEMY TRYB
+        # 2. TWARDY RESET W CELU SYNCHRONIZACJI SLAVE'A
+        jlink.rtt_write(0, b'reset\n')
+        time.sleep(3) # Czekamy az urzadzenie wstanie i wepchnie parametr do silnika
+        try:
+            jlink.rtt_stop()
+            time.sleep(0.2)
+            jlink.rtt_start()
+        except:
+            pass
+            
+        # 3. PO RESECIE MOZEMY BEZPIECZNIE TESTOWAC SILNIK
         mode_set("KONTROLA_LEWE_PRAWA")
         time.sleep(1)
         
@@ -228,21 +236,14 @@ def test_find_optimal_torque():
         
         if result == "ERROR" or result == "TIMEOUT":
             reason = "MOTOR ERROR" if result == "ERROR" else "TIMEOUT"
-            print("   [X] Moment {} OBLAL TEST ({}). Robie bezpieczny reset...".format(tq, reason))
-            
-            jlink.rtt_write(0, b'reset\n')
-            time.sleep(3) 
-            try:
-                jlink.rtt_stop()
-                time.sleep(0.2)
-                jlink.rtt_start()
-            except:
-                pass
+            print("   [X] Moment {} OBLAL TEST ({}).".format(tq, reason))
+            # Nic nie musimy sprzatac, bo na poczatku nastepnej petli i tak bedzie nowy reset!
             
         elif result == "OPENED":
             print("   [V] Moment {} ZALICZYL TEST! Brama otwarta.".format(tq))
             successful_torques.append(tq)
             
+            # Zamkniecie bramki po udanym otwarciu
             sensor_poke(LEFT_SENSOR)
             sensor_poke(LEFT_SECURITY_SENSOR)
             sensor_poke(CENTER_SECURITY_SENSOR)
@@ -250,15 +251,7 @@ def test_find_optimal_torque():
             sensor_poke(RIGHT_SENSOR)
             
             wait_for_logs(LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
-            
-            jlink.rtt_write(0, b'reset\n')
-            time.sleep(3)
-            try:
-                jlink.rtt_stop()
-                time.sleep(0.2)
-                jlink.rtt_start()
-            except:
-                pass
+            time.sleep(1)
 
     if not successful_torques:
         print("\nBLAD KRYTYCZNY: Na zadnym momencie obrotowym (1-20) brama nie ruszyla poprawnie!")
@@ -276,6 +269,16 @@ def test_find_optimal_torque():
     if not rtt_set_and_verify(28, optimal_torque):
         print("BLAD KRYTYCZNY: Nie mozna zaaplikowac finalnego momentu!")
         sys.exit(1)
+        
+    # OSTATNI RESET NA ZAKONCZENIE PRE-CHECKA (zeby wejsc w testy ze stala wartoscia na silniku)
+    jlink.rtt_write(0, b'reset\n')
+    time.sleep(3)
+    try:
+        jlink.rtt_stop()
+        time.sleep(0.2)
+        jlink.rtt_start()
+    except:
+        pass
     time.sleep(1)
 
 def test_diagnostics_counters():
@@ -419,9 +422,9 @@ jlink.open(serial_no=selected_sn)
 jlink.connect("STM32F030RC", verbose=True)
 jlink.rtt_start()
 
-# Twardy reset urzadzenia na wejsciu
+# Twardy reset urzadzenia na wejsciu (dla pewnosci)
 jlink.restart()
-print("Czekam 3 sekundy na start procesora po resecie...")
+print("Czekam 3 sekundy na start procesora po pierwszym resecie...")
 time.sleep(3)
 
 # >>>>>>>>>>>>> PRE-FLIGHT CHECKS >>>>>>>>>>>>>
