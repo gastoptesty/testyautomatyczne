@@ -147,22 +147,31 @@ def rtt_get_param(idx, timeout_sec=1.0):
 
 def rtt_set_and_verify(idx, val):
     for attempt in range(4):
-        # Wysylamy komende zapisu
+        # 1. Wysylamy komende zapisu
         jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
-        time.sleep(0.5)
         
-        # Sprawdzamy zapis w Masterze
+        # Czekamy 1 sekunde, aby procesor spokojnie zapisal dane do pamieci Flash 
+        # (co w STM32 zamraza uklad)
+        time.sleep(1.0)
+        
+        # --- RESUSCYTACJA RTT ---
+        # Zatrzymujemy i wznawiamy nasluch w J-Linku, aby podniesc przerwane 
+        # polaczenie po "zamrozeniu" szyny pamieci przez zapis do Flasha.
+        try:
+            jlink.rtt_stop()
+            time.sleep(0.1)
+            jlink.rtt_start()
+        except:
+            pass
+        # ------------------------
+        
+        # 2. Teraz spokojnie sprawdzamy zapis w Masterze
         resp = rtt_get_param(idx, 1.5)
         
-        # --- DODANE PRINTY DEBUGUJĄCE ---
-        print("   [DEBUG-RTT] Surowa odpowiedz (resp): {}".format(repr(resp)))
+        print("   [DEBUG-RTT] Surowa odpowiedz: {}".format(repr(resp)))
         
         clean_resp = resp.replace('get {}\n'.format(idx), '')
-        print("   [DEBUG-RTT] Po oczyszczeniu (clean_resp): {}".format(repr(clean_resp)))
-        
         digits = re.findall(r'\d+', clean_resp)
-        print("   [DEBUG-RTT] Znalezione cyfry (digits): {}".format(digits))
-        # --------------------------------
         
         if digits:
             read_val = int(digits[-1])
