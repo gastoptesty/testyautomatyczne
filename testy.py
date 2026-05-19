@@ -153,8 +153,16 @@ def rtt_set_and_verify(idx, val):
         
         # Sprawdzamy zapis w Masterze
         resp = rtt_get_param(idx, 1.5)
+        
+        # --- DODANE PRINTY DEBUGUJĄCE ---
+        print("   [DEBUG-RTT] Surowa odpowiedz (resp): {}".format(repr(resp)))
+        
         clean_resp = resp.replace('get {}\n'.format(idx), '')
+        print("   [DEBUG-RTT] Po oczyszczeniu (clean_resp): {}".format(repr(clean_resp)))
+        
         digits = re.findall(r'\d+', clean_resp)
+        print("   [DEBUG-RTT] Znalezione cyfry (digits): {}".format(digits))
+        # --------------------------------
         
         if digits:
             read_val = int(digits[-1])
