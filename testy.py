@@ -59,14 +59,17 @@ def wait_for_logs(log, timeout_sec):
     rtt = ''
     start_time_log = time.time()
     while time.time() - start_time_log < timeout_sec:
-        char = jlink.rtt_read(0, 1)
-        if len(char) == 1:
-            rtt += chr(char[0])
-        if rtt[-len(log):] == log:
+        chunk = jlink.rtt_read(0, 1024)
+        if chunk:
+            text = "".join([chr(c) for c in chunk])
+            sys.stdout.write(text) # Wydruk na zywo
+            sys.stdout.flush()
+            rtt += text
+            
+        if log in rtt:
             return True
-    print("-----------============ LOGS ============-------------")
-    print(rtt)
-    print("-----------========== DIAGNOSE ============-------------")
+            
+    print("\n-----------========== DIAGNOSE ============-------------")
     print("Timeout reached. Log:'{}' not found. - TEST FAILED".format(log))
     play_beep(440, 500)  
     sys.exit(1)
@@ -75,10 +78,14 @@ def check_for_log_bool(log, timeout_sec):
     rtt = ''
     start_time_log = time.time()
     while time.time() - start_time_log < timeout_sec:
-        char = jlink.rtt_read(0, 1)
-        if len(char) == 1:
-            rtt += chr(char[0])
-        if rtt[-len(log):] == log:
+        chunk = jlink.rtt_read(0, 1024)
+        if chunk:
+            text = "".join([chr(c) for c in chunk])
+            sys.stdout.write(text) # Wydruk na zywo
+            sys.stdout.flush()
+            rtt += text
+            
+        if log in rtt:
             return True
     return False
 
@@ -99,7 +106,7 @@ def mode_set(mode):
         time.sleep(0.5)
         current_mode = mode
     else:
-        print("Mode:{} not found. - TEST FAILED".format(mode))
+        print("\nMode:{} not found. - TEST FAILED".format(mode))
         play_beep(440, 500)
         sys.exit(1)
 
@@ -147,33 +154,37 @@ def rtt_get_param(idx, timeout_sec=1.0):
 
 def rtt_set_and_verify(idx, val):
     for attempt in range(4):
-        # 1. Czyszczenie bufora odczytu z jakichkolwiek starych smieci
+        # 1. Zamiast kasowac stare smieci w ciemno, wypluwamy je na ekran
         try:
-            jlink.rtt_read(0, 4096)
+            chunk = jlink.rtt_read(0, 4096)
+            if chunk:
+                text = "".join([chr(c) for c in chunk])
+                print("[RTT ODCZYT W TLE]:", text.strip())
         except:
             pass
             
         # 2. Wysylamy komende zapisu
         jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
         
-        # 3. Czekamy 1.5 sekundy, aby procesor spokojnie zapisal dane do pamieci Flash 
-        # (co w STM32 na chwile zamraza caly uklad)
+        # 3. Czekamy 1.5 sekundy, aby procesor zapisal dane do Flash (pauza ukladu)
         time.sleep(1.5)
         
-        # 4. Ponownie czyscimy bufor z "echa" naszej komendy set
+        # 4. Znowu czytamy wszystko co sie wydarzylo w miedzyczasie
         try:
-            jlink.rtt_read(0, 4096)
+            chunk = jlink.rtt_read(0, 4096)
+            if chunk:
+                text = "".join([chr(c) for c in chunk])
+                print("[RTT PO ZAPISIE]:", text.strip())
         except:
             pass
             
-        # 5. Odblokowanie parsera w C (wysylamy sam Enter) na wypadek zawieszenia 
+        # 5. Enter odblokowujacy zawieszonego parsera w C
         jlink.rtt_write(0, b'\n')
         time.sleep(0.2)
         
         # 6. Sprawdzamy stan parametru
         resp = rtt_get_param(idx, 1.5)
-        
-        print("   [DEBUG-RTT] Surowa odpowiedz: {}".format(repr(resp)))
+        print("   [DEBUG-RTT] Odpowiedz na GET: {}".format(repr(resp)))
         
         clean_resp = resp.replace('get {}\n'.format(idx), '')
         digits = re.findall(r'\d+', clean_resp)
@@ -183,7 +194,7 @@ def rtt_set_and_verify(idx, val):
             if read_val == val:
                 return True
             else:
-                print("   [SYNC FAIL] Ustawiono {}, ale bramka zglasza {}. Ponawiam...".format(val, read_val))
+                print("   [SYNC FAIL] Ustawiono {}, ale zglasza {}. Ponawiam...".format(val, read_val))
         else:
             print("   [SYNC FAIL] Brak jasnej odpowiedzi. Ponawiam...")
             
@@ -218,14 +229,14 @@ def test_find_optimal_torque():
         
         # 1. ZAPIS PARAMETRU W MASTERZE
         if not rtt_set_and_verify(28, tq):
-            print("BLAD KRYTYCZNY: Nie udalo sie zapisac momentu w pamieci Mastera!")
+            print("\nBLAD KRYTYCZNY: Nie udalo sie zapisac momentu w pamieci Mastera!")
             sys.exit(1)
             
         print("   [OK] Zapisano w Masterze. Wymuszam TWARDY RESET, aby zaktualizowac Slave'a...")
         
         # 2. TWARDY RESET W CELU SYNCHRONIZACJI SLAVE'A
         jlink.rtt_write(0, b'reset\n')
-        time.sleep(3) # Czekamy az urzadzenie wstanie i wepchnie parametr do silnika
+        time.sleep(3) 
         try:
             jlink.rtt_stop()
             time.sleep(0.2)
@@ -245,9 +256,12 @@ def test_find_optimal_torque():
         result = "TIMEOUT"
         
         while time.time() - start_t < 4.0:
-            char = jlink.rtt_read(0, 1)
-            if len(char) == 1:
-                rtt_buffer += chr(char[0])
+            chunk = jlink.rtt_read(0, 1024)
+            if chunk:
+                text = "".join([chr(c) for c in chunk])
+                sys.stdout.write(text) # Wydruk na zywo
+                sys.stdout.flush()
+                rtt_buffer += text
                 
                 if LOG_MOTOR_ERROR in rtt_buffer:
                     result = "ERROR"
@@ -258,11 +272,10 @@ def test_find_optimal_torque():
         
         if result == "ERROR" or result == "TIMEOUT":
             reason = "MOTOR ERROR" if result == "ERROR" else "TIMEOUT"
-            print("   [X] Moment {} OBLAL TEST ({}).".format(tq, reason))
-            # Nic nie musimy sprzatac, bo na poczatku nastepnej petli i tak bedzie nowy reset!
+            print("\n   [X] Moment {} OBLAL TEST ({}).".format(tq, reason))
             
         elif result == "OPENED":
-            print("   [V] Moment {} ZALICZYL TEST! Brama otwarta.".format(tq))
+            print("\n   [V] Moment {} ZALICZYL TEST! Brama otwarta.".format(tq))
             successful_torques.append(tq)
             
             # Zamkniecie bramki po udanym otwarciu
@@ -289,10 +302,10 @@ def test_find_optimal_torque():
     
     print("-> Aplikowanie optymalnego momentu ({}) na reszte testow...".format(optimal_torque))
     if not rtt_set_and_verify(28, optimal_torque):
-        print("BLAD KRYTYCZNY: Nie mozna zaaplikowac finalnego momentu!")
+        print("\nBLAD KRYTYCZNY: Nie mozna zaaplikowac finalnego momentu!")
         sys.exit(1)
         
-    # OSTATNI RESET NA ZAKONCZENIE PRE-CHECKA (zeby wejsc w testy ze stala wartoscia na silniku)
+    # OSTATNI RESET NA ZAKONCZENIE PRE-CHECKA
     jlink.rtt_write(0, b'reset\n')
     time.sleep(3)
     try:
@@ -343,7 +356,7 @@ def execute_custom_sequence(iter_num, config):
         time.sleep(POKE_DELAY_TIME)
         
         if interrupt_step and index == interrupt_step["after_index"]:
-            print("[!] WYWOLANIE ALARMU: Naruszenie czujnika {} w trakcie ruchu!".format(interrupt_step['sensor']))
+            print("\n[!] WYWOLANIE ALARMU: Naruszenie czujnika {} w trakcie ruchu!".format(interrupt_step['sensor']))
             jlink.rtt_write(0, 'sensor {} 1\n'.format(interrupt_step["sensor"]).encode('utf-8'))
             time.sleep(0.5)
             check_for_log_bool(LOG_ALARM_SAFETY, 2)
@@ -355,10 +368,10 @@ def execute_custom_sequence(iter_num, config):
     if expected_log:
         found = check_for_log_bool(expected_log, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
         if not found:
-            print("BLAD: Oczekiwano logu '{}', ale go zabraklo! - TEST FAILED".format(expected_log))
+            print("\nBLAD: Oczekiwano logu '{}', ale go zabraklo! - TEST FAILED".format(expected_log))
             play_beep(440, 500)
             sys.exit(1)
-        print("SUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
+        print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
     
     time.sleep(1) 
     
@@ -368,17 +381,17 @@ def execute_custom_sequence(iter_num, config):
 
     if expect_count:
         if total_end <= total_start:
-            print("BLAD: Zliczanie przejscia NIE powiodlo sie, a powinno! - TEST FAILED")
+            print("\nBLAD: Zliczanie przejscia NIE powiodlo sie, a powinno! - TEST FAILED")
             sys.exit(1)
         else:
             right_counter, left_counter = end_r, end_l
-            print("SUKCES: Licznik poprawnie wzrosl (Obecnie: L:{}, R:{})".format(left_counter, right_counter))
+            print("\nSUKCES: Licznik poprawnie wzrosl (Obecnie: L:{}, R:{})".format(left_counter, right_counter))
     else:
         if total_end > total_start:
-            print("BLAD: System nieslusznie zliczyl przejscie (np. podczas alarmu)! - TEST FAILED")
+            print("\nBLAD: System nieslusznie zliczyl przejscie (np. podczas alarmu)! - TEST FAILED")
             sys.exit(1)
         else:
-            print("SUKCES: System poprawnie zignorowal nieudane przejscie.")
+            print("\nSUKCES: System poprawnie zignorowal nieudane przejscie.")
 
 # =========================================================
 # GENERATOR BAZY TESTOW BEHAWIORALNYCH
@@ -444,7 +457,7 @@ jlink.open(serial_no=selected_sn)
 jlink.connect("STM32F030RC", verbose=True)
 jlink.rtt_start()
 
-# Twardy reset urzadzenia na wejsciu (dla pewnosci)
+# Twardy reset urzadzenia na wejsciu
 jlink.restart()
 print("Czekam 3 sekundy na start procesora po pierwszym resecie...")
 time.sleep(3)
