@@ -147,25 +147,30 @@ def rtt_get_param(idx, timeout_sec=1.0):
 
 def rtt_set_and_verify(idx, val):
     for attempt in range(4):
-        # 1. Wysylamy komende zapisu
-        jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
-        
-        # Czekamy 1 sekunde, aby procesor spokojnie zapisal dane do pamieci Flash 
-        # (co w STM32 zamraza uklad)
-        time.sleep(1.0)
-        
-        # --- RESUSCYTACJA RTT ---
-        # Zatrzymujemy i wznawiamy nasluch w J-Linku, aby podniesc przerwane 
-        # polaczenie po "zamrozeniu" szyny pamieci przez zapis do Flasha.
+        # 1. Czyszczenie bufora odczytu z jakichkolwiek starych smieci
         try:
-            jlink.rtt_stop()
-            time.sleep(0.1)
-            jlink.rtt_start()
+            jlink.rtt_read(0, 4096)
         except:
             pass
-        # ------------------------
+            
+        # 2. Wysylamy komende zapisu
+        jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
         
-        # 2. Teraz spokojnie sprawdzamy zapis w Masterze
+        # 3. Czekamy 1.5 sekundy, aby procesor spokojnie zapisal dane do pamieci Flash 
+        # (co w STM32 na chwile zamraza caly uklad)
+        time.sleep(1.5)
+        
+        # 4. Ponownie czyscimy bufor z "echa" naszej komendy set
+        try:
+            jlink.rtt_read(0, 4096)
+        except:
+            pass
+            
+        # 5. Odblokowanie parsera w C (wysylamy sam Enter) na wypadek zawieszenia 
+        jlink.rtt_write(0, b'\n')
+        time.sleep(0.2)
+        
+        # 6. Sprawdzamy stan parametru
         resp = rtt_get_param(idx, 1.5)
         
         print("   [DEBUG-RTT] Surowa odpowiedz: {}".format(repr(resp)))
