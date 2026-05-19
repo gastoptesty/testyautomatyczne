@@ -154,37 +154,44 @@ def rtt_get_param(idx, timeout_sec=1.0):
 
 def rtt_set_and_verify(idx, val):
     for attempt in range(4):
-        # 1. Zamiast kasowac stare smieci w ciemno, wypluwamy je na ekran
-        try:
-            chunk = jlink.rtt_read(0, 4096)
-            if chunk:
-                text = "".join([chr(c) for c in chunk])
-                print("[RTT ODCZYT W TLE]:", text.strip())
-        except:
-            pass
-            
-        # 2. Wysylamy komende zapisu
+        print("\n--- [PRÓBA ZAPISU {}] Ustawianie parametru {} na wartość {} ---".format(attempt + 1, idx, val))
+        
+        # 1. Czyszczenie lokalnego bufora przed wysłaniem komendy
+        jlink.rtt_read(0, 4096)
+        
+        # 2. Wysyłamy komendę set
         jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
         
-        # 3. Czekamy 1.5 sekundy, aby procesor zapisal dane do Flash (pauza ukladu)
-        time.sleep(1.5)
+        # 3. KONTINUALNY NASŁUCH (Zamiast time.sleep - czytamy non-stop przez 3 sekundy)
+        # To pozwoli nam złapać logi błędu na milisekundy przed tym, jak Watchdog zresetuje RAM!
+        collected_logs = ""
+        start_monitor = time.time()
         
-        # 4. Znowu czytamy wszystko co sie wydarzylo w miedzyczasie
-        try:
-            chunk = jlink.rtt_read(0, 4096)
+        print("   [MONITOR] Rozpoczynam agresywny nasłuch bufora RTT...")
+        while time.time() - start_monitor < 3.0:
+            chunk = jlink.rtt_read(0, 1024)
             if chunk:
                 text = "".join([chr(c) for c in chunk])
-                print("[RTT PO ZAPISIE]:", text.strip())
-        except:
-            pass
+                # Natychmiastowy zrzut na ekran (i do Twojego arkusza/logera)
+                sys.stdout.write(text)
+                sys.stdout.flush()
+                collected_logs += text
+            time.sleep(0.01) # Przerwa 10ms - czytamy tak szybko, jak to możliwe
             
-        # 5. Enter odblokowujacy zawieszonego parsera w C
-        jlink.rtt_write(0, b'\n')
-        time.sleep(0.2)
+        print("\n   [MONITOR] Zakończono okno nasłuchu.")
         
-        # 6. Sprawdzamy stan parametru
-        resp = rtt_get_param(idx, 1.5)
-        print("   [DEBUG-RTT] Odpowiedz na GET: {}".format(repr(resp)))
+        # 4. Sprawdzamy czy w zebranych logach nie ma śladów katastrofy
+        if "Watchdog" in collected_logs or "WDG" in collected_logs or "reset" in collected_logs.lower():
+            print("   [KATASTROFA V] Wykryto sprzętowy RESET/WATCHDOG w logach podczas zapisu!")
+            # Jeśli procesor się zresetował, nie ma sensu robić 'get', bo parametry i tak wróciły do normy
+            return False
+
+        # 5. Jeśli nie było resetu, wysyłamy Enter na odblokowanie parsera i sprawdzamy stan komendą GET
+        jlink.rtt_write(0, b'\n')
+        time.sleep(0.1)
+        
+        resp = rtt_get_param(idx, 1.0)
+        print("   [DEBUG-RTT] Odpowiedź na GET po operacji: {}".format(repr(resp)))
         
         clean_resp = resp.replace('get {}\n'.format(idx), '')
         digits = re.findall(r'\d+', clean_resp)
@@ -192,13 +199,13 @@ def rtt_set_and_verify(idx, val):
         if digits:
             read_val = int(digits[-1])
             if read_val == val:
+                print("   [SUKCES] Parametr poprawnie zweryfikowany w Masterze.")
                 return True
             else:
-                print("   [SYNC FAIL] Ustawiono {}, ale zglasza {}. Ponawiam...".format(val, read_val))
+                print("   [SYNC FAIL] Zgłasza {}, oczekiwano {}. Ponawiam...".format(read_val, val))
         else:
-            print("   [SYNC FAIL] Brak jasnej odpowiedzi. Ponawiam...")
+            print("   [SYNC FAIL] Brak jasnej odpowiedzi cyfrowej na GET.")
             
-        time.sleep(0.5)
     return False
 
 # =========================================================
