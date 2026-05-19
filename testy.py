@@ -62,7 +62,7 @@ def wait_for_logs(log, timeout_sec):
         chunk = jlink.rtt_read(0, 1024)
         if chunk:
             text = "".join([chr(c) for c in chunk])
-            sys.stdout.write(text) # Wydruk na zywo
+            sys.stdout.write(text) 
             sys.stdout.flush()
             rtt += text
             
@@ -81,7 +81,7 @@ def check_for_log_bool(log, timeout_sec):
         chunk = jlink.rtt_read(0, 1024)
         if chunk:
             text = "".join([chr(c) for c in chunk])
-            sys.stdout.write(text) # Wydruk na zywo
+            sys.stdout.write(text) 
             sys.stdout.flush()
             rtt += text
             
@@ -153,17 +153,17 @@ def rtt_get_param(idx, timeout_sec=1.0):
     return rtt
 
 def rtt_set_and_verify(idx, val):
+    collected_logs = ""
     for attempt in range(4):
         print("\n--- [PRÓBA ZAPISU {}] Ustawianie parametru {} na wartość {} ---".format(attempt + 1, idx, val))
         
-        # 1. Czyszczenie lokalnego bufora przed wysłaniem komendy
-        jlink.rtt_read(0, 4096)
-        
-        # 2. Wysyłamy komendę set
+        try:
+            jlink.rtt_read(0, 4096)
+        except:
+            pass
+            
         jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
         
-        # 3. KONTINUALNY NASŁUCH (Zamiast time.sleep - czytamy non-stop przez 3 sekundy)
-        # To pozwoli nam złapać logi błędu na milisekundy przed tym, jak Watchdog zresetuje RAM!
         collected_logs = ""
         start_monitor = time.time()
         
@@ -172,21 +172,18 @@ def rtt_set_and_verify(idx, val):
             chunk = jlink.rtt_read(0, 1024)
             if chunk:
                 text = "".join([chr(c) for c in chunk])
-                # Natychmiastowy zrzut na ekran (i do Twojego arkusza/logera)
                 sys.stdout.write(text)
                 sys.stdout.flush()
                 collected_logs += text
-            time.sleep(0.01) # Przerwa 10ms - czytamy tak szybko, jak to możliwe
+            time.sleep(0.01) 
             
         print("\n   [MONITOR] Zakończono okno nasłuchu.")
         
-        # 4. Sprawdzamy czy w zebranych logach nie ma śladów katastrofy
         if "Watchdog" in collected_logs or "WDG" in collected_logs or "reset" in collected_logs.lower():
             print("   [KATASTROFA V] Wykryto sprzętowy RESET/WATCHDOG w logach podczas zapisu!")
-            # Jeśli procesor się zresetował, nie ma sensu robić 'get', bo parametry i tak wróciły do normy
-            return False
+            # Zwracamy logi, zeby moc je wstrzyknac do bledu krytycznego
+            return False, collected_logs
 
-        # 5. Jeśli nie było resetu, wysyłamy Enter na odblokowanie parsera i sprawdzamy stan komendą GET
         jlink.rtt_write(0, b'\n')
         time.sleep(0.1)
         
@@ -200,13 +197,13 @@ def rtt_set_and_verify(idx, val):
             read_val = int(digits[-1])
             if read_val == val:
                 print("   [SUKCES] Parametr poprawnie zweryfikowany w Masterze.")
-                return True
+                return True, collected_logs
             else:
                 print("   [SYNC FAIL] Zgłasza {}, oczekiwano {}. Ponawiam...".format(read_val, val))
         else:
             print("   [SYNC FAIL] Brak jasnej odpowiedzi cyfrowej na GET.")
             
-    return False
+    return False, collected_logs
 
 # =========================================================
 # PRE-FLIGHT CHECKS (Testy i kalibracje)
@@ -234,9 +231,10 @@ def test_find_optimal_torque():
     for tq in range(1, 21):
         print("\n--- Skanowanie wartosci Max Torque: {} ---".format(tq))
         
-        # 1. ZAPIS PARAMETRU W MASTERZE
-        if not rtt_set_and_verify(28, tq):
-            print("\nBLAD KRYTYCZNY: Nie udalo sie zapisac momentu w pamieci Mastera!")
+        # 1. ZAPIS PARAMETRU W MASTERZE (Rozpakowujemy tupla: status oraz logi)
+        status, logs = rtt_set_and_verify(28, tq)
+        if not status:
+            print("\nBLAD KRYTYCZNY: Nie udalo sie zapisac momentu w pamieci Mastera! || SUROWE LOGI: {}".format(repr(logs)))
             sys.exit(1)
             
         print("   [OK] Zapisano w Masterze. Wymuszam TWARDY RESET, aby zaktualizowac Slave'a...")
@@ -266,7 +264,7 @@ def test_find_optimal_torque():
             chunk = jlink.rtt_read(0, 1024)
             if chunk:
                 text = "".join([chr(c) for c in chunk])
-                sys.stdout.write(text) # Wydruk na zywo
+                sys.stdout.write(text) 
                 sys.stdout.flush()
                 rtt_buffer += text
                 
@@ -285,7 +283,6 @@ def test_find_optimal_torque():
             print("\n   [V] Moment {} ZALICZYL TEST! Brama otwarta.".format(tq))
             successful_torques.append(tq)
             
-            # Zamkniecie bramki po udanym otwarciu
             sensor_poke(LEFT_SENSOR)
             sensor_poke(LEFT_SECURITY_SENSOR)
             sensor_poke(CENTER_SECURITY_SENSOR)
@@ -308,8 +305,9 @@ def test_find_optimal_torque():
     print("=======================================================\n")
     
     print("-> Aplikowanie optymalnego momentu ({}) na reszte testow...".format(optimal_torque))
-    if not rtt_set_and_verify(28, optimal_torque):
-        print("\nBLAD KRYTYCZNY: Nie mozna zaaplikowac finalnego momentu!")
+    status, logs = rtt_set_and_verify(28, optimal_torque)
+    if not status:
+        print("\nBLAD KRYTYCZNY: Nie mozna zaaplikowac finalnego momentu! || SUROWE LOGI: {}".format(repr(logs)))
         sys.exit(1)
         
     # OSTATNI RESET NA ZAKONCZENIE PRE-CHECKA
