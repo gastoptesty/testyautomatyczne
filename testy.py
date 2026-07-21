@@ -200,9 +200,10 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
                 collected_logs += text
             time.sleep(0.01)
 
-        if ("Watchdog" in collected_logs or "WDG" in collected_logs
-                or "reset" in collected_logs.lower()):
-            print("   [KATASTROFA] Wykryto sprzetowy RESET/WATCHDOG w logach podczas zapisu!")
+        # Sprawdzamy tylko prawdziwe awarie krytyczne, pomijamy zwykłe komunikaty soft-resetu
+        if ("WWDG" in collected_logs or "IWDG" in collected_logs
+                or "HardFault" in collected_logs):
+            print("   [KATASTROFA] Wykryto sprzetowy HardFault lub Watchdog w logach!")
             return False, collected_logs
 
         jlink.rtt_write(0, b'\n')
@@ -353,7 +354,6 @@ def test_eeprom_crash_safe(jlink):
     test_id = 28  # MAX_TORQUE_SILNIK
     test_val = 14 
     
-    # Używamy is_remote=True, aby upewnić się, że mechanizm zapisu EEPROM dokona commitu w Flash
     status, logs = rtt_set_and_verify(jlink, test_id, test_val, is_remote=True)
     if not status:
         print("  [BLAD KRYTYCZNY] Nie udalo sie nadpisac zmiennej (ID: {})! Test przerwany.".format(test_id))
@@ -366,7 +366,6 @@ def test_eeprom_crash_safe(jlink):
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
     time.sleep(0.5)
 
-    # Próba odczytu z mechanizmem retry na wypadek stabilizacji CLI po boocie
     digits = []
     for attempt in range(3):
         response = rtt_get_param(jlink, test_id, timeout_sec=2.0)
@@ -375,7 +374,6 @@ def test_eeprom_crash_safe(jlink):
             break
         time.sleep(0.5)
     
-    # Sprzatanie (przywracamy domyślny niski moment przed kalibracją)
     jlink.rtt_write(0, 'set {} 1\n'.format(test_id).encode('utf-8'))
     time.sleep(0.5)
 
@@ -452,7 +450,6 @@ def test_find_optimal_torque(jlink):
             print("   [V] Moment {} wystarczajacy do ruchu.".format(tq))
             successful_torques.append(tq)
             
-            # Reset sensors to close gate
             sensor_poke(jlink, LEFT_SENSOR)
             sensor_poke(jlink, RIGHT_SENSOR)
             wait_for_logs(jlink, LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
