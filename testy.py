@@ -281,12 +281,21 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
             time.sleep(BOOT_WAIT_LINK)
 
 # =========================================================
-# PRE-FLIGHT CHECKS & DIAGNOSTICS
+# PRE-FLIGHT CHECKS & DIAGNOSTICS (ZABEZPIECZONE)
 # =========================================================
 def test_calibration_read_only(jlink):
     print("\n[PRE-CHECK] Sprawdzanie bezpieczenstwa kalibracji...")
-    response = rtt_get_param(jlink, 7)
-    digits = re.findall(r'\d+', response.replace('get 7', ''))
+    drain_rtt(jlink, 4096)
+    time.sleep(0.5)
+
+    digits = []
+    for attempt in range(5):
+        response = rtt_get_param(jlink, 7, timeout_sec=2.0)
+        digits = re.findall(r'\d+', response.replace('get 7', ''))
+        if digits:
+            break
+        time.sleep(0.8)
+
     if not digits:
         print("Nie udalo sie odczytac kalibracji! Zatrzymuje test.")
         sys.exit(1)
@@ -316,15 +325,24 @@ def test_diagnostics_counters(jlink):
 
 def test_diagnostic_readonly(jlink):
     print("\n[PRE-CHECK] Test ochrony parametrow diagnostycznych (Uptime - ID 118)...")
-    response = rtt_get_param(jlink, 118)
-    digits = re.findall(r'\d+', response.replace('get 118', ''))
+    drain_rtt(jlink, 4096)
+    
+    digits = []
+    for attempt in range(3):
+        response = rtt_get_param(jlink, 118, timeout_sec=2.0)
+        digits = re.findall(r'\d+', response.replace('get 118', ''))
+        if digits:
+            break
+        time.sleep(0.5)
+        
     if not digits:
+        print("  [WARN] Brak odpowiedzi dla ID 118, pomijam ten konkretny check.")
         return
         
     jlink.rtt_write(0, b'set 118 9999\n')
     time.sleep(0.5)
 
-    response_new = rtt_get_param(jlink, 118)
+    response_new = rtt_get_param(jlink, 118, timeout_sec=2.0)
     new_digits = re.findall(r'\d+', response_new.replace('get 118', ''))
     if new_digits:
         new_uptime = int(new_digits[-1])
@@ -336,17 +354,27 @@ def test_diagnostic_readonly(jlink):
 
 def test_boundary_limits(jlink):
     print("\n[PRE-CHECK] Test limitow tablicy menu (Predkosc silnika - ID 18)...")
+    drain_rtt(jlink, 4096)
+    
     jlink.rtt_write(0, b'set 18 255\n')
     time.sleep(0.5)
     
-    response = rtt_get_param(jlink, 18)
-    digits = re.findall(r'\d+', response.replace('get 18', ''))
+    digits = []
+    for attempt in range(3):
+        response = rtt_get_param(jlink, 18, timeout_sec=2.0)
+        digits = re.findall(r'\d+', response.replace('get 18', ''))
+        if digits:
+            break
+        time.sleep(0.5)
+        
     if digits:
         clamped_val = int(digits[-1])
         if clamped_val == 255:
             print("  [OSTRZEZENIE] Brak logiki MIN/MAX w menu_st dla tego parametru! Zapisano 255.")
         else:
             print("  [OK] System zablokowal niebezpieczna wartosc: {}".format(clamped_val))
+    else:
+        print("  [WARN] Brak odpowiedzi dla limitów prędkości.")
 
 def test_eeprom_crash_safe(jlink):
     print("\n[PRE-CHECK] Test trwalosci atomowego zapisu EEPROM (Flash)...")
@@ -364,13 +392,11 @@ def test_eeprom_crash_safe(jlink):
     print("  [OK] Wymuszam twardy reset...")
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
     
-    # Dajemy konsoli CLI chwilę na pełną gotowość po starcie systemu
     time.sleep(2.0)
     drain_rtt(jlink, 4096)
 
     digits = []
     for attempt in range(5):
-        print("  [Odczyt po restarcie - próba {}/5]".format(attempt + 1))
         response = rtt_get_param(jlink, test_id, timeout_sec=2.5)
         digits = re.findall(r'\d+', response.replace('get {}'.format(test_id), ''))
         if digits:
