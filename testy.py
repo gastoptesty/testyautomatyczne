@@ -200,7 +200,6 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
                 collected_logs += text
             time.sleep(0.01)
 
-        # Sprawdzamy tylko prawdziwe awarie krytyczne, pomijamy zwykłe komunikaty soft-resetu
         if ("WWDG" in collected_logs or "IWDG" in collected_logs
                 or "HardFault" in collected_logs):
             print("   [KATASTROFA] Wykryto sprzetowy HardFault lub Watchdog w logach!")
@@ -364,15 +363,19 @@ def test_eeprom_crash_safe(jlink):
 
     print("  [OK] Wymuszam twardy reset...")
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
-    time.sleep(0.5)
+    
+    # Dajemy konsoli CLI chwilę na pełną gotowość po starcie systemu
+    time.sleep(2.0)
+    drain_rtt(jlink, 4096)
 
     digits = []
-    for attempt in range(3):
-        response = rtt_get_param(jlink, test_id, timeout_sec=2.0)
+    for attempt in range(5):
+        print("  [Odczyt po restarcie - próba {}/5]".format(attempt + 1))
+        response = rtt_get_param(jlink, test_id, timeout_sec=2.5)
         digits = re.findall(r'\d+', response.replace('get {}'.format(test_id), ''))
         if digits:
             break
-        time.sleep(0.5)
+        time.sleep(1.0)
     
     jlink.rtt_write(0, 'set {} 1\n'.format(test_id).encode('utf-8'))
     time.sleep(0.5)
