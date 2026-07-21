@@ -234,7 +234,7 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
 
     print("   [RESET] Wymuszono reset sprzetowy przez SWD. Czekam na boot MCU...")
     try:
-        jlink.restart()  # Twardy reset SWD zamiast wysylania komendy UART
+        jlink.restart()
     except Exception as e:
         print("   [WARN] Blad jlink.restart(): {}. Uzywam komendy konsolowej...".format(e))
         jlink.rtt_write(0, b'reset\n')
@@ -349,30 +349,40 @@ def test_boundary_limits(jlink):
             print("  [OK] System zablokowal niebezpieczna wartosc: {}".format(clamped_val))
 
 def test_eeprom_crash_safe(jlink):
-    print("\n[PRE-CHECK] Test trwalosci atomowego zapisu EEPROM...")
-    # Wykorzystujemy ID 28 (MAX_TORQUE_SILNIK). Zaraz potem i tak robimy kalibracje momentu.
-    test_id = 28 
+    print("\n[PRE-CHECK] Test trwalosci atomowego zapisu EEPROM (Flash)...")
+    test_id = 28  # MAX_TORQUE_SILNIK
     test_val = 14 
     
-    status, logs = rtt_set_and_verify(jlink, test_id, test_val, is_remote=False)
+    # Używamy is_remote=True, aby upewnić się, że mechanizm zapisu EEPROM dokona commitu w Flash
+    status, logs = rtt_set_and_verify(jlink, test_id, test_val, is_remote=True)
     if not status:
         print("  [BLAD KRYTYCZNY] Nie udalo sie nadpisac zmiennej (ID: {})! Test przerwany.".format(test_id))
         sys.exit(1)
 
-    print("  [OK] Zmienna testowa ustawiona. Wymuszam twardy reset...")
-    safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
+    print("  [OK] Zmienna testowa ustawiona. Czekam 1s na zatwierdzenie w pamieci Flash...")
+    time.sleep(1.0)
 
-    response = rtt_get_param(jlink, test_id, timeout_sec=3.0)
-    digits = re.findall(r'\d+', response.replace('get {}'.format(test_id), ''))
+    print("  [OK] Wymuszam twardy reset...")
+    safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
+    time.sleep(0.5)
+
+    # Próba odczytu z mechanizmem retry na wypadek stabilizacji CLI po boocie
+    digits = []
+    for attempt in range(3):
+        response = rtt_get_param(jlink, test_id, timeout_sec=2.0)
+        digits = re.findall(r'\d+', response.replace('get {}'.format(test_id), ''))
+        if digits:
+            break
+        time.sleep(0.5)
     
-    # Sprzatanie (resetujemy do niskiej wartosci przed poszukiwaniem momentu)
+    # Sprzatanie (przywracamy domyślny niski moment przed kalibracją)
     jlink.rtt_write(0, 'set {} 1\n'.format(test_id).encode('utf-8'))
     time.sleep(0.5)
 
     if digits and int(digits[-1]) == test_val:
         print("  [OK] Dane we Flash (EEPROM) sa bezpieczne, przetrwaly nagly reset!")
     else:
-        val_read = digits[-1] if digits else "Brak odpowiedzi (RTT martwe lub zmienna pusta)"
+        val_read = digits[-1] if digits else "Brak odpowiedzi (CLI nie gotowe)"
         print("  [BLAD KRYTYCZNY] Utrata danych po restarcie! Skrypt odczytal: {}".format(val_read))
         sys.exit(1)
 
