@@ -165,7 +165,7 @@ def get_counters(jlink, timeout_sec=1.0):
     return right_counter, left_counter
 
 # =========================================================
-# FUNKCJE RTT (GET / SET / VERIFY)
+# FUNKCJE RTT (GET / SET / VERIFY) - NAPRAWIONE
 # =========================================================
 def rtt_get_param(jlink, idx, timeout_sec=1.5):
     try:
@@ -176,12 +176,11 @@ def rtt_get_param(jlink, idx, timeout_sec=1.5):
     jlink.rtt_write(0, 'get {}\n'.format(idx).encode('utf-8'))
     start_t = time.time()
     rtt = ''
+    # Czytamy przez cały timeout, aby upewnić się, że pobraliśmy odpowiedź z CLI
     while time.time() - start_t < timeout_sec:
         chunk = jlink.rtt_read(0, 1024)
         if chunk:
             rtt += "".join([chr(c) for c in chunk])
-            if "\n" in rtt:
-                break
         time.sleep(0.02)
     return rtt
 
@@ -251,7 +250,6 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
 
     time.sleep(delay)
 
-    # Bardziej odporna pętla ponowień RTT Start
     rtt_started = False
     start_rtt_time = time.time()
     while time.time() - start_rtt_time < 6.0:
@@ -290,7 +288,7 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
 
     if link_found:
         print("   [BOOT] Wykryto marker Master<->Slave. System w 100% gotowy.")
-        time.sleep(1.0) # Dodatkowa chwila na stabilizację zadań we FreeRTOS
+        time.sleep(1.0)
     else:
         print("   [BOOT WARN] Nie przechwycono logu startowego (MCU wstal zbyt szybko).")
         print("   [BOOT PING] Wysylam ping diagnostyczny (tryb pracy ID 0)...")
@@ -414,7 +412,6 @@ def test_eeprom_crash_safe(jlink):
     print("  [OK] Wymuszam twardy reset...")
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
     
-    # Dłuższy bufor czasowy na pełny rozruch CLI po resecie
     time.sleep(3.0)
     drain_rtt(jlink, 4096)
 
