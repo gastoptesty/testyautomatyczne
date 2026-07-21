@@ -140,13 +140,15 @@ def get_counters(jlink, timeout_sec=1.0):
     time.sleep(0.1)
     rtt = ''
     start_time_c = time.time()
+    
+    while time.time() - start_time_c < timeout_sec:
+        chunk = jlink.rtt_read(0, 1024)
+        if chunk:
+            rtt += "".join([chr(c) for c in chunk])
+        time.sleep(0.02)
+
     pattern_right = r"right counter:(\d+)"
     pattern_left  = r"left counter:(\d+)"
-
-    while time.time() - start_time_c < timeout_sec:
-        char = jlink.rtt_read(0, 1)
-        if len(char) == 1:
-            rtt += chr(char[0])
 
     matches_r = re.findall(pattern_right, rtt)
     matches_l = re.findall(pattern_left,  rtt)
@@ -163,16 +165,24 @@ def get_counters(jlink, timeout_sec=1.0):
     return right_counter, left_counter
 
 # =========================================================
-# FUNKCJE RTT (GET / SET / VERIFY)
+# FUNKCJE RTT (GET / SET / VERIFY) - POPRAWIONE CHUNKOWanie
 # =========================================================
-def rtt_get_param(jlink, idx, timeout_sec=1.0):
+def rtt_get_param(jlink, idx, timeout_sec=1.5):
+    try:
+        jlink.rtt_read(0, 4096) # Czyszczenie bufora przed zapytaniem
+    except Exception:
+        pass
+
     jlink.rtt_write(0, 'get {}\n'.format(idx).encode('utf-8'))
     start_t = time.time()
     rtt = ''
     while time.time() - start_t < timeout_sec:
-        char = jlink.rtt_read(0, 1)
-        if len(char) == 1:
-            rtt += chr(char[0])
+        chunk = jlink.rtt_read(0, 1024)
+        if chunk:
+            rtt += "".join([chr(c) for c in chunk])
+            if "\n" in rtt: # Otrzymano pełną linię odpowiedzi
+                break
+        time.sleep(0.02)
     return rtt
 
 def rtt_set_and_verify(jlink, idx, val, is_remote=False):
