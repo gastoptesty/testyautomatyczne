@@ -165,11 +165,11 @@ def get_counters(jlink, timeout_sec=1.0):
     return right_counter, left_counter
 
 # =========================================================
-# FUNKCJE RTT (GET / SET / VERIFY) - POPRAWIONE CHUNKOWanie
+# FUNKCJE RTT (GET / SET / VERIFY)
 # =========================================================
 def rtt_get_param(jlink, idx, timeout_sec=1.5):
     try:
-        jlink.rtt_read(0, 4096) # Czyszczenie bufora przed zapytaniem
+        jlink.rtt_read(0, 4096)
     except Exception:
         pass
 
@@ -180,7 +180,7 @@ def rtt_get_param(jlink, idx, timeout_sec=1.5):
         chunk = jlink.rtt_read(0, 1024)
         if chunk:
             rtt += "".join([chr(c) for c in chunk])
-            if "\n" in rtt: # Otrzymano pełną linię odpowiedzi
+            if "\n" in rtt:
                 break
         time.sleep(0.02)
     return rtt
@@ -251,12 +251,24 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
 
     time.sleep(delay)
 
-    try:
-        jlink.rtt_stop()
-        time.sleep(0.5)
-        jlink.rtt_start()
-    except Exception as e:
-        print("[WARN] RTT restart napotkal blad: {}".format(e))
+    # Odporna pętla ponowień RTT Start (czeka aż firmware zainicjalizuje bufor RTT)
+    rtt_started = False
+    start_rtt_time = time.time()
+    while time.time() - start_rtt_time < 5.0:
+        try:
+            jlink.rtt_stop()
+        except Exception:
+            pass
+        time.sleep(0.2)
+        try:
+            jlink.rtt_start()
+            rtt_started = True
+            break
+        except Exception:
+            time.sleep(0.4)
+
+    if not rtt_started:
+        print("[WARN] Nie udalo sie wznowic RTT automatycznie.")
 
     if not wait_for_link:
         time.sleep(1)
@@ -291,7 +303,7 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
             time.sleep(BOOT_WAIT_LINK)
 
 # =========================================================
-# PRE-FLIGHT CHECKS & DIAGNOSTICS (ZABEZPIECZONE)
+# PRE-FLIGHT CHECKS & DIAGNOSTICS
 # =========================================================
 def test_calibration_read_only(jlink):
     print("\n[PRE-CHECK] Sprawdzanie bezpieczenstwa kalibracji...")
