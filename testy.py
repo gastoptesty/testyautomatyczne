@@ -185,7 +185,7 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
 
         try:
             jlink.rtt_read(0, 4096)
-        except Exception as e:
+        except Exception:
             pass
 
         jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
@@ -233,7 +233,7 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
         delay = BOOT_WAIT_MASTER
 
     jlink.rtt_write(0, b'reset\n')
-    print("   [RESET] Czekam {}s na wstepny start Mastera...".format(delay))
+    print("   [RESET] Wymuszono reset sprzetowy. Czekam na boot MCU...")
     time.sleep(delay)
 
     try:
@@ -241,7 +241,7 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
         time.sleep(0.2)
         jlink.rtt_start()
     except Exception as e:
-        print("[WARN] RTT restart napotkal blad (kontynuuje): {}".format(e))
+        print("[WARN] RTT restart napotkal blad: {}".format(e))
 
     if not wait_for_link:
         time.sleep(1)
@@ -262,11 +262,18 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
         time.sleep(0.05)
 
     if link_found:
-        print("   [BOOT] Link Master<->Slave potwierdzony. Bezpieczny zapis mozliwy.")
+        print("   [BOOT] Wykryto marker Master<->Slave. System w 100% gotowy.")
         time.sleep(0.5)
     else:
-        print("   [BOOT WARN] Nie wykryto markera gotowosci. Ryzyko WDG!")
-        time.sleep(BOOT_WAIT_LINK)
+        print("   [BOOT WARN] Nie przechwycono logu startowego (MCU wstal zbyt szybko).")
+        print("   [BOOT PING] Wysylam ping diagnostyczny, by sprawdzic czy brama zyje...")
+        
+        ping_resp = rtt_get_param(jlink, 0, timeout_sec=2.0)
+        if re.findall(r'\d+', ping_resp):
+            print("   [BOOT OK] Brama zyje i odpowiada na zapytania RTT. Bezpieczny zapis mozliwy.")
+        else:
+            print("   [BOOT FATAL] Brama nie odpowiada! Ryzyko WDG lub Boot-Loop.")
+            time.sleep(BOOT_WAIT_LINK)
 
 # =========================================================
 # PRE-FLIGHT CHECKS & DIAGNOSTICS
@@ -338,20 +345,30 @@ def test_boundary_limits(jlink):
 
 def test_eeprom_crash_safe(jlink):
     print("\n[PRE-CHECK] Test trwalosci atomowego zapisu EEPROM...")
-    test_id = 42 
+    # Wykorzystujemy ID 55 (INVITATION_MODE) wg pliku comm.h
+    test_id = 55 
     test_val = 1 
     
-    jlink.rtt_write(0, 'set {} {}\n'.format(test_id, test_val).encode('utf-8'))
-    time.sleep(0.5)
+    status, logs = rtt_set_and_verify(jlink, test_id, test_val, is_remote=False)
+    if not status:
+        print("  [BLAD KRYTYCZNY] Nie udalo sie nadpisac zmiennej (ID: {})! Test przerwany.".format(test_id))
+        sys.exit(1)
 
+    print("  [OK] Zmienna testowa ustawiona. Wymuszam twardy reset...")
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
 
-    response = rtt_get_param(jlink, test_id)
+    response = rtt_get_param(jlink, test_id, timeout_sec=3.0)
     digits = re.findall(r'\d+', response.replace('get {}'.format(test_id), ''))
+    
+    # Sprzatanie przed weryfikacja
+    jlink.rtt_write(0, 'set {} 0\n'.format(test_id).encode('utf-8'))
+    time.sleep(0.5)
+
     if digits and int(digits[-1]) == test_val:
-        print("  [OK] Dane we Flash sa bezpieczne.")
+        print("  [OK] Dane we Flash (EEPROM) sa bezpieczne, przetrwaly nagly reset!")
     else:
-        print("  [BLAD KRYTYCZNY] Utrata danych po restarcie!")
+        val_read = digits[-1] if digits else "Brak"
+        print("  [BLAD KRYTYCZNY] Utrata danych po restarcie! Skrypt odczytal: {}".format(val_read))
         sys.exit(1)
 
 def setup_gate_hardware(jlink, gate_type):
@@ -534,7 +551,7 @@ def generate_100_scenarios():
 
     # 1. TESTY KIERUNKOWE (KONTROLA DOSTĘPU)
     scenarios.append({
-        "name": "KONTROLA: Otwarcie w LEWO (Prawidłowe przejście L->P)",
+        "name": "KONTROLA: Otwarcie w LEWO (Prawidlowe przejscie L->P)",
         "mode": "KONTROLA_LEWE_PRAWA",
         "permit": "L",
         "seq": seq_lp,
@@ -543,7 +560,7 @@ def generate_100_scenarios():
     })
 
     scenarios.append({
-        "name": "KONTROLA: Otwarcie w PRAWO (Prawidłowe przejście P->L)",
+        "name": "KONTROLA: Otwarcie w PRAWO (Prawidlowe przejscie P->L)",
         "mode": "KONTROLA_LEWE_PRAWA",
         "permit": "R",
         "seq": seq_pl,
@@ -553,16 +570,16 @@ def generate_100_scenarios():
 
     # 2. TESTY BLOKADY I NIEAUTORYZOWANEGO DOSTĘPU
     scenarios.append({
-        "name": "BLOKADA: Próba wejścia z lewej przy całkowitym zamknięciu",
+        "name": "BLOKADA: Proba wejscia z lewej przy calkowitym zamknieciu",
         "mode": "BLOKADA_LEWE_PRAWA",
-        "permit": "L", # Nawet przy nadanym uprawnieniu brama ma być zablokowana
+        "permit": "L", # Nawet przy nadanym uprawnieniu brama ma byc zablokowana
         "seq": [LEFT_SENSOR],
         "log": LOG_ALARM_NO_PERMIT, 
         "count": False
     })
     
     scenarios.append({
-        "name": "KONTROLA ZŁY KIERUNEK: Uprawnienie L, wejście fizyczne z P",
+        "name": "KONTROLA ZLY KIERUNEK: Uprawnienie L, wejscie fizyczne z P",
         "mode": "KONTROLA_LEWE_PRAWA",
         "permit": "L",
         "seq": [RIGHT_SENSOR, RIGHT_SECURITY_SENSOR],
@@ -572,17 +589,17 @@ def generate_100_scenarios():
 
     # 3. TESTY TIMEOUTU / SYGNAŁÓW ZWROTNYCH (BRAK AKCJI)
     scenarios.append({
-        "name": "TIMEOUT: Nadano uprawnienie L, ale użytkownik nie wszedł",
+        "name": "TIMEOUT: Nadano uprawnienie L, ale uzytkownik nie wszedl",
         "mode": "KONTROLA_LEWE_PRAWA",
         "permit": "L",
         "seq": [], # Brak ruchu
         "log": LOG_GATE_CLOSED, 
         "count": False,
-        "wait_time": 10 # Nadpisany dłuższy czas oczekiwania na auto-zamknięcie
+        "wait_time": 10 # Nadpisany dluzszy czas oczekiwania na auto-zamkniecie
     })
 
     scenarios.append({
-        "name": "WYCOFANIE: Użytkownik wszedł i zrezygnował",
+        "name": "WYCOFANIE: Uzytkownik wszedl i zrezygnowal",
         "mode": "WOLNE_LEWE_PRAWA",
         "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR],
         "log": LOG_GATE_CLOSED, 
@@ -591,13 +608,13 @@ def generate_100_scenarios():
 
     # 4. TESTY PPOŻ (EWAKUACJA) ORAZ SYSTEMÓW KRYTYCZNYCH
     scenarios.append({
-        "name": "ALARM PPOŻ: Awaryjne otwarcie i ewakuacja",
+        "name": "ALARM PPOZ: Awaryjne otwarcie i ewakuacja",
         "mode": "WOLNE_LEWE_PRAWA",
-        "custom_trigger": "ppoz 1\n", # Symulacja sygnału na wejściu PPOŻ
+        "custom_trigger": "ppoz 1\n", # Symulacja sygnalu na wejsciu PPOZ
         "seq": seq_lp,
-        "log": "", # Przy ewakuacji bramka zostaje otwarta, ignoruje zamknięcie
+        "log": "", # Przy ewakuacji bramka zostaje otwarta, ignoruje zamkniecie
         "count": False,
-        "custom_restore": "ppoz 0\n" # Reset alarmu PPOŻ
+        "custom_restore": "ppoz 0\n" # Reset alarmu PPOZ
     })
 
     scenarios.append({
@@ -605,23 +622,23 @@ def generate_100_scenarios():
         "mode": "WOLNE_LEWE_PRAWA",
         "custom_trigger": "sensor 5 1\n",
         "seq": [],
-        "log": LOG_ALARM_SAFETY, # System powinien wykryć ciągłą zajętość strefy
+        "log": LOG_ALARM_SAFETY, # System powinien wykryc ciagla zajetosc strefy
         "count": False,
         "custom_restore": "sensor 5 0\n"
     })
 
     # 5. TESTY MANIPULACJI (TAILGATING / INTRUSION)
     scenarios.append({
-        "name": "TAILGATING: Próba przejścia dwóch osób na jedno odbicie (L->P)",
+        "name": "TAILGATING: Proba przejscia dwoch osob na jedno odbicie (L->P)",
         "mode": "KONTROLA_LEWE_PRAWA",
         "permit": "L",
         "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR],
         "log": LOG_ALARM_TAILGATING, 
-        "count": True # Zliczy pierwszego, drugi wywoła alarm
+        "count": True # Zliczy pierwszego, drugi wywola alarm
     })
 
     scenarios.append({
-        "name": "INTRUSION: Wtargnięcie bezpośrednio w środek bramki",
+        "name": "INTRUSION: Wtargniecie bezposrednio w srodek bramki",
         "mode": "WOLNE_LEWE_PRAWA", 
         "seq": [CENTER_SECURITY_SENSOR],
         "log": LOG_ALARM_INTRUSION, 
@@ -642,7 +659,7 @@ def generate_100_scenarios():
         seq_lp_wah = ([LEFT_SENSOR] * ((i % 2) + 1)
                   + [LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR])
         scenarios.append({
-            "name": "WOLNE L->P (Wahanie przy wejściu {}x)".format(i % 2 + 1),
+            "name": "WOLNE L->P (Wahanie przy wejsciu {}x)".format(i % 2 + 1),
             "mode": "WOLNE_LEWE_PRAWA", "seq": seq_lp_wah,
             "log": LOG_GATE_CLOSED, "count": True
         })
@@ -650,7 +667,7 @@ def generate_100_scenarios():
         seq_pl_wah = ([RIGHT_SENSOR] * ((i % 2) + 1)
                   + [RIGHT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR])
         scenarios.append({
-            "name": "WOLNE P->L (Wahanie przy wejściu {}x)".format(i % 2 + 1),
+            "name": "WOLNE P->L (Wahanie przy wejsciu {}x)".format(i % 2 + 1),
             "mode": "WOLNE_LEWE_PRAWA", "seq": seq_pl_wah,
             "log": LOG_GATE_CLOSED, "count": True
         })
@@ -714,7 +731,7 @@ def main():
         # Inicjalizacja peryferiow zaleznie od parametru SG/GT/SK/BR
         setup_gate_hardware(jlink, GATE_TYPE)
 
-        # Test momentu obrotowego odpalamy zawsze, by zweryfikować zachowanie (np. opuszczanie rygla w GT/BR)
+        # Test momentu obrotowego odpalamy zawsze, by zweryfikowac zachowanie (np. opuszczanie rygla w GT/BR)
         test_find_optimal_torque(jlink)
 
         # >>>>>>>>>>>>> SETUP PRZED GLOWNA PETLA >>>>>>>>>>>>>
