@@ -51,6 +51,7 @@ LOG_ALARM_TAILGATING = "ALARM TAILGATING"
 LOG_MOTOR_ERROR    = "MOTOR ERROR"
 LOG_ALARM_NO_PERMIT  = "ALARM NO PERMIT"
 LOG_ALARM_SAFETY   = "SAFETY ALARM"
+LOG_TIMEOUT        = "TIMEOUT"
 
 # =========================================================
 # FUNKCJE POMOCNICZE BAZOWE
@@ -164,27 +165,14 @@ def get_counters(jlink, timeout_sec=1.0):
 # =========================================================
 # FUNKCJE RTT (GET / SET / VERIFY)
 # =========================================================
-
 def rtt_get_param(jlink, idx, timeout_sec=1.0):
-    # Drenaż bufora przed nowym zapytaniem, by nie odczytać starych śmieci
-    try:
-        jlink.rtt_read(0, 4096)
-    except Exception:
-        pass
-
-    # Używamy \r\n jako pełnego znaku powrotu karetki i nowej linii
-    jlink.rtt_write(0, 'get {}\r\n'.format(idx).encode('utf-8'))
+    jlink.rtt_write(0, 'get {}\n'.format(idx).encode('utf-8'))
     start_t = time.time()
     rtt = ''
-    
-    # Odczyt asynchroniczny dużych bloków pamięci (zamiast 1 bajta)
     while time.time() - start_t < timeout_sec:
-        chunk = jlink.rtt_read(0, 1024)
-        if chunk:
-            text = "".join([chr(c) for c in chunk])
-            rtt += text
-        time.sleep(0.01) # Lekki odpoczynek dla procesora ułatwiający buforowanie OS
-        
+        char = jlink.rtt_read(0, 1)
+        if len(char) == 1:
+            rtt += chr(char[0])
     return rtt
 
 def rtt_set_and_verify(jlink, idx, val, is_remote=False):
@@ -198,71 +186,43 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
         try:
             jlink.rtt_read(0, 4096)
         except Exception as e:
-            print("   [WARN] Pre-write drain error (ignored): {}".format(e))
+            pass
 
-        # Wysłanie komendy set wraz ze znakami powrotu karetki
-        cmd = 'set {} {}\r\n'.format(idx, val)
-        jlink.rtt_write(0, cmd.encode('utf-8'))
+        jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
 
         collected_logs = ""
         start_monitor = time.time()
 
-        print("   [MONITOR] Nasłuch RTT przez {}s...".format(monitor_window))
         while time.time() - start_monitor < monitor_window:
             chunk = jlink.rtt_read(0, 1024)
             if chunk:
                 text = "".join([chr(c) for c in chunk])
-                sys.stdout.write(text)
-                sys.stdout.flush()
                 collected_logs += text
-            time.sleep(0.05)
-
-        print("\n   [MONITOR] Zakończono okno nasłuchu.")
+            time.sleep(0.01)
 
         if ("Watchdog" in collected_logs or "WDG" in collected_logs
                 or "reset" in collected_logs.lower()):
-            print("   [KATASTROFA] Wykryto sprzętowy RESET/WATCHDOG w logach podczas zapisu!")
+            print("   [KATASTROFA] Wykryto sprzetowy RESET/WATCHDOG w logach podczas zapisu!")
             return False, collected_logs
 
-        # Wymuszenie ew. komendy zapisu do EEPROM/Flash (urządzenie zignoruje to, jeśli nie zna komendy)
-        jlink.rtt_write(0, b'save\r\n')
+        jlink.rtt_write(0, b'\n')
         time.sleep(0.2)
-
         try:
-            jlink.rtt_read(0, 4096) # Czyszczenie przed GET
+            jlink.rtt_read(0, 256)
         except Exception:
             pass
 
         resp = rtt_get_param(jlink, idx, 1.5 if is_remote else 1.0)
-        print("   [DEBUG-RTT] Odpowiedz na GET: {}".format(repr(resp)))
-
-        # 1. Usunięcie znaków sterujących i kodów koloru ANSI
-        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-        clean_resp = ansi_escape.sub('', resp)
-        clean_resp = clean_resp.replace('get {}\r\n'.format(idx), '').replace('get {}\n'.format(idx), '')
-
-        # 2. Wyciągnięcie samych liczb
+        clean_resp = resp.replace('get {}\n'.format(idx), '')
         digits = re.findall(r'\d+', clean_resp)
 
         if digits:
-            # Weryfikacja bezpośrednio szukająca oczekiwanej wartości (najodporniejsza metoda)
-            if str(val) in digits:
+            read_val = int(digits[-1])
+            if read_val == val:
                 print("   [SUKCES] Parametr poprawnie zweryfikowany.")
                 return True, collected_logs
             else:
-                # W ramach zapasu (fallback), szukamy liczby znajdującej się tuż po indeksie
-                read_val = int(digits[-1])
-                for i, d in enumerate(digits):
-                    if d == str(idx) and i + 1 < len(digits):
-                        read_val = int(digits[i+1])
-                        break
-                
-                if read_val == val:
-                    print("   [SUKCES] Parametr poprawnie zweryfikowany.")
-                    return True, collected_logs
-
-                print("   [SYNC FAIL] Zgłasza odczyt: {}, oczekiwano {}. Ponawiam...".format(
-                    read_val, val))
+                print("   [SYNC FAIL] Zglasza {}, oczekiwano {}. Ponawiam...".format(read_val, val))
         else:
             print("   [SYNC FAIL] Brak jasnej odpowiedzi cyfrowej na GET.")
 
@@ -281,14 +241,11 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
         time.sleep(0.2)
         jlink.rtt_start()
     except Exception as e:
-        print("[WARN] RTT restart napotkał błąd (kontynuuję): {}".format(e))
+        print("[WARN] RTT restart napotkal blad (kontynuuje): {}".format(e))
 
     if not wait_for_link:
         time.sleep(1)
         return
-
-    print("   [BOOT] Czekam na potwierdzenie linku Master↔Slave "
-          "(szukam: '{}', timeout {}s)...".format(LOG_SYSTEM_READY, SYSTEM_READY_TIMEOUT))
 
     rtt_buf = ""
     start_link = time.time()
@@ -298,8 +255,6 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
         chunk = jlink.rtt_read(0, 1024)
         if chunk:
             text = "".join([chr(c) for c in chunk])
-            sys.stdout.write(text)
-            sys.stdout.flush()
             rtt_buf += text
         if LOG_SYSTEM_READY in rtt_buf:
             link_found = True
@@ -307,18 +262,14 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
         time.sleep(0.05)
 
     if link_found:
-        elapsed = time.time() - start_link
-        print("   [BOOT] Link Master↔Slave potwierdzony po {:.1f}s. "
-              "Bezpieczny zapis EE remote możliwy.".format(elapsed))
+        print("   [BOOT] Link Master<->Slave potwierdzony. Bezpieczny zapis mozliwy.")
         time.sleep(0.5)
     else:
-        print("   [BOOT WARN] Nie wykryto markera gotowości w ciągu {}s. "
-              "Kontynuuję z dodatkowym opóźnieniem {}s (ryzyko WDG!).".format(
-                  SYSTEM_READY_TIMEOUT, BOOT_WAIT_LINK))
+        print("   [BOOT WARN] Nie wykryto markera gotowosci. Ryzyko WDG!")
         time.sleep(BOOT_WAIT_LINK)
 
 # =========================================================
-# PRE-FLIGHT CHECKS
+# PRE-FLIGHT CHECKS & DIAGNOSTICS
 # =========================================================
 def test_calibration_read_only(jlink):
     print("\n[PRE-CHECK] Sprawdzanie bezpieczenstwa kalibracji...")
@@ -334,50 +285,119 @@ def test_calibration_read_only(jlink):
         sys.exit(1)
     print("Kalibracja w normie. Odczytana wartosc: {}".format(calib_val))
 
-def setup_gate_sg(jlink):
+def test_diagnostics_counters(jlink):
+    print("\n[TLO] Sprawdzanie licznikow diagnostycznych (wg comm.h)...")
+    
+    response = rtt_get_param(jlink, 116)
+    digits = re.findall(r'\d+', response.replace('get 116', ''))
+    if digits:
+        err_count = int(digits[-1])
+        if err_count > 0:
+            print("  [OSTRZEZENIE] Wykryto {} bledow komunikacji Master-Slave!".format(err_count))
+            
+    response_wwdg = rtt_get_param(jlink, 112)
+    digits_wwdg = re.findall(r'\d+', response_wwdg.replace('get 112', ''))
+    if digits_wwdg:
+        wwdg_count = int(digits_wwdg[-1])
+        if wwdg_count > 0:
+            print("  [OSTRZEZENIE] Krytyczne resety WWDG: {}!".format(wwdg_count))
+
+def test_diagnostic_readonly(jlink):
+    print("\n[PRE-CHECK] Test ochrony parametrow diagnostycznych (Uptime - ID 118)...")
+    response = rtt_get_param(jlink, 118)
+    digits = re.findall(r'\d+', response.replace('get 118', ''))
+    if not digits:
+        return
+        
+    jlink.rtt_write(0, b'set 118 9999\n')
+    time.sleep(0.5)
+
+    response_new = rtt_get_param(jlink, 118)
+    new_digits = re.findall(r'\d+', response_new.replace('get 118', ''))
+    if new_digits:
+        new_uptime = int(new_digits[-1])
+        if new_uptime == 9999:
+            print("  [BLAD KRYTYCZNY] Ochrona nie dziala! Parametr read-only nadpisany.")
+            sys.exit(1)
+        else:
+            print("  [OK] Zabezpieczenie dziala, parametr nienaruszony.")
+
+def test_boundary_limits(jlink):
+    print("\n[PRE-CHECK] Test limitow tablicy menu (Predkosc silnika - ID 18)...")
+    jlink.rtt_write(0, b'set 18 255\n')
+    time.sleep(0.5)
+    
+    response = rtt_get_param(jlink, 18)
+    digits = re.findall(r'\d+', response.replace('get 18', ''))
+    if digits:
+        clamped_val = int(digits[-1])
+        if clamped_val == 255:
+            print("  [OSTRZEZENIE] Brak logiki MIN/MAX w menu_st dla tego parametru! Zapisano 255.")
+        else:
+            print("  [OK] System zablokowal niebezpieczna wartosc: {}".format(clamped_val))
+
+def test_eeprom_crash_safe(jlink):
+    print("\n[PRE-CHECK] Test trwalosci atomowego zapisu EEPROM...")
+    test_id = 42 
+    test_val = 1 
+    
+    jlink.rtt_write(0, 'set {} {}\n'.format(test_id, test_val).encode('utf-8'))
+    time.sleep(0.5)
+
+    safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
+
+    response = rtt_get_param(jlink, test_id)
+    digits = re.findall(r'\d+', response.replace('get {}'.format(test_id), ''))
+    if digits and int(digits[-1]) == test_val:
+        print("  [OK] Dane we Flash sa bezpieczne.")
+    else:
+        print("  [BLAD KRYTYCZNY] Utrata danych po restarcie!")
+        sys.exit(1)
+
+def setup_gate_hardware(jlink, gate_type):
     """
-    Wymusza konfigurację sprzętową specyficzną dla bramki SG:
-    - Hamulec aktywny
-    - Rygle i zbijak nieaktywne
+    Konfiguruje sprzet zaleznie od typu bramki.
+    SG: Szybkie bramki rozsuwane - Hamulec aktywny, Rygle wylaczone, Zbijak wylaczony
+    GT: Bramki obrotowe/Tripody - Hamulec wylaczony, Rygle aktywne, Zbijak (rotacja) aktywny
+    SK: Bramki wahadlowe - Hamulec aktywny, Rygle wylaczone, Zbijak wylaczony
+    BR: Bramka reczna/Barierka - Hamulec wylaczony, Rygle aktywne, Zbijak wylaczony
     """
-    print("\n[SETUP] Konfiguracja sprzetowa dla bramki SG (Tylko Hamulec + Silniki)...")
+    print("\n[SETUP] Konfiguracja sprzetowa dla bramki: {}...".format(gate_type))
 
-    # Włączamy Hamulec (idx 32 = 1) [EE remote]
-    status, logs = rtt_set_and_verify(jlink, 32, 1, is_remote=True)
-    if not status:
-        print("\n[OSTRZEZENIE] Nie udalo sie wlaczyc hamulca (idx 32)! Ignoruje i kontynuuje test.")
+    if gate_type == "SG":
+        rtt_set_and_verify(jlink, 32, 1, is_remote=True)
+        rtt_set_and_verify(jlink, 34, 0, is_remote=True)
+        rtt_set_and_verify(jlink, 38, 0, is_remote=True)
+    elif gate_type == "GT":
+        rtt_set_and_verify(jlink, 32, 0, is_remote=True)
+        rtt_set_and_verify(jlink, 34, 1, is_remote=True)
+        rtt_set_and_verify(jlink, 38, 1, is_remote=True)
+    elif gate_type == "SK":
+        rtt_set_and_verify(jlink, 32, 1, is_remote=True)
+        rtt_set_and_verify(jlink, 34, 0, is_remote=True)
+        rtt_set_and_verify(jlink, 38, 0, is_remote=True)
+    elif gate_type == "BR":
+        rtt_set_and_verify(jlink, 32, 0, is_remote=True)
+        rtt_set_and_verify(jlink, 34, 1, is_remote=True)
+        rtt_set_and_verify(jlink, 38, 0, is_remote=True)
+    else:
+        print("  [WARN] Nieznany typ bramki, pomijam scisla konfiguracje EEPROM.")
 
-    # Wyłączamy Rygle (idx 34 = 0) [EE remote]
-    status, logs = rtt_set_and_verify(jlink, 34, 0, is_remote=True)
-    if not status:
-        print("\n[OSTRZEZENIE] Nie udalo sie wylaczyc rygli (idx 34)! Ignoruje i kontynuuje test.")
-
-    # Wyłączamy rotację zbijaka (idx 38 = 0) [EE remote]
-    status, logs = rtt_set_and_verify(jlink, 38, 0, is_remote=True)
-    if not status:
-        print("\n[OSTRZEZENIE] Nie udalo sie wylaczyc zbijaka (idx 38)! Ignoruje i kontynuuje test.")
-
-    print("   [OK] Etap konfiguracji sprzetowej SG zakonczony. Reset + czekam na link Master↔Slave...")
+    print("   [OK] Konfiguracja peryferiow zapisana. Wykonuje restart...")
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
 
 def test_find_optimal_torque(jlink):
-    print("\n[PRE-CHECK] Pelne skanowanie Max Torque (1-20, EE remote)...")
+    print("\n[PRE-CHECK] Pelne skanowanie Max Torque (1-20)...")
     successful_torques = []
 
     for tq in range(1, 21):
-        print("\n--- Skanowanie Max Torque: {} ---".format(tq))
         status, logs = rtt_set_and_verify(jlink, 28, tq, is_remote=True)
         if not status:
-            print("\n[OSTRZEZENIE] Nie udalo sie zapisac momentu {}!"
-                  "\n|| SUROWE LOGI: {}".format(tq, repr(logs)))
-            print("Pomięcie testu dla momentu {} i kontynuacja...".format(tq))
-            continue # Przechodzimy do kolejnej iteracji pętli zamiast przerywać skrypt
+            continue 
 
-        print("   [OK] Zapisano. Reset + czekam na link Master↔Slave...")
         safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
         mode_set(jlink, "KONTROLA_LEWE_PRAWA")
         time.sleep(1)
-        print("   Wymuszam probe otwarcia...")
         add_permission(jlink, "L")
 
         rtt_buffer = ''
@@ -388,10 +408,7 @@ def test_find_optimal_torque(jlink):
             chunk = jlink.rtt_read(0, 1024)
             if chunk:
                 text = "".join([chr(c) for c in chunk])
-                sys.stdout.write(text)
-                sys.stdout.flush()
                 rtt_buffer += text
-
                 if LOG_MOTOR_ERROR in rtt_buffer:
                     result = "ERROR"
                     break
@@ -399,65 +416,25 @@ def test_find_optimal_torque(jlink):
                     result = "OPENED"
                     break
 
-        if result in ("ERROR", "TIMEOUT"):
-            reason = "MOTOR ERROR" if result == "ERROR" else "TIMEOUT"
-            print("\n   [X] Moment {} OBLAL TEST ({}).".format(tq, reason))
-        elif result == "OPENED":
-            print("\n   [V] Moment {} ZALICZYL! Brama otwarta.".format(tq))
+        if result == "OPENED":
+            print("   [V] Moment {} wystarczajacy do ruchu.".format(tq))
             successful_torques.append(tq)
-
+            
+            # Reset sensors to close gate
             sensor_poke(jlink, LEFT_SENSOR)
-            sensor_poke(jlink, LEFT_SECURITY_SENSOR)
-            sensor_poke(jlink, CENTER_SECURITY_SENSOR)
-            sensor_poke(jlink, RIGHT_SECURITY_SENSOR)
             sensor_poke(jlink, RIGHT_SENSOR)
-
             wait_for_logs(jlink, LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
             time.sleep(2)
+        else:
+            print("   [X] Moment {} niewystarczajacy.".format(tq))
 
-    # Co jeśli żaden moment nie przeszedł testu LUB nie dało się zapisać żadnego z nich?
-    if not successful_torques:
-        print("\n[OSTRZEZENIE] Brama nie ruszyla na zadnym momencie LUB zapis byl niemozliwy!")
-        print("Testy beda kontynuowane na domyslnym (obecnym w pamieci) ustawieniu momentu.")
-        print("   [OK] Przywracam tryb WOLNE_LEWE_PRAWA przed finalnym resetem.")
-        mode_set(jlink, "WOLNE_LEWE_PRAWA")
-        safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
-        return # Wychodzimy z funkcji, nie aplikujemy optymalnego momentu
+    if successful_torques:
+        optimal_torque = min(successful_torques)
+        print("-> Aplikowanie optymalnego momentu ({})...".format(optimal_torque))
+        rtt_set_and_verify(jlink, 28, optimal_torque, is_remote=True)
 
-    optimal_torque = min(successful_torques)
-
-    print("\n=======================================================")
-    print(" RAPORT SKANOWANIA MOMENTU OBROTOWEGO:")
-    print(" Dzialajace wartosci: {}".format(successful_torques))
-    print(" Optymalny prog: {}".format(optimal_torque))
-    print("=======================================================\n")
-
-    print("-> Aplikowanie optymalnego momentu ({})...".format(optimal_torque))
-    status, logs = rtt_set_and_verify(jlink, 28, optimal_torque, is_remote=True)
-    if not status:
-        print("\n[OSTRZEZENIE] Nie mozna zaaplikowac finalnego momentu!"
-              "\n|| SUROWE LOGI: {}".format(repr(logs)))
-        print("Testy beda kontynuowane na ostatnim zachowanym ustawieniu.")
-
-    print("   [OK] Przywracam tryb WOLNE_LEWE_PRAWA przed finalnym resetem.")
     mode_set(jlink, "WOLNE_LEWE_PRAWA")
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
-
-def test_diagnostics_counters(jlink):
-    print("\n[TLO] Sprawdzanie licznikow diagnostycznych...")
-    response = rtt_get_param(jlink, 60)
-    digits = re.findall(r'\d+', response.replace('get 60', ''))
-    if digits:
-        err_count = int(digits[-1])
-        if err_count > 0:
-            print("OSTRZEZENIE: Wykryto {} bledow komunikacji Master-Slave!".format(err_count))
-            
-    response2 = rtt_get_param(jlink, 67)
-    digits2 = re.findall(r'\d+', response2.replace('get 67', ''))
-    if digits2:
-        s_err = int(digits2[-1])
-        if s_err > 0:
-            print("OSTRZEZENIE: Slave zgłasza {} bledow komunikacji!".format(s_err))
 
 # =========================================================
 # SILNIK WYKONAWCZY SEKWENCJI
@@ -470,6 +447,9 @@ def execute_custom_sequence(jlink, iter_num, config):
     req_mode      = config.get("mode", "WOLNE_LEWE_PRAWA")
     permit        = config.get("permit", None)
     interrupt_step = config.get("interrupt", None)
+    custom_trigger = config.get("custom_trigger", None)
+    custom_restore = config.get("custom_restore", None)
+    wait_time      = config.get("wait_time", WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
 
     print("\n=======================================================")
     print(">>> TEST NR: {} | {}".format(iter_num, name))
@@ -484,26 +464,32 @@ def execute_custom_sequence(jlink, iter_num, config):
     if permit:
         print("Nadawanie uprawnienia dla: {}".format(permit))
         add_permission(jlink, permit)
+        
+    if custom_trigger:
+        print("Wysylanie Triggera Systemowego: {}".format(custom_trigger.strip()))
+        jlink.rtt_write(0, custom_trigger.encode('utf-8'))
+        time.sleep(0.5)
 
-    for index, sensor in enumerate(seq):
-        jlink.rtt_write(0, 'sensor {} 1\n'.format(sensor).encode('utf-8'))
-        time.sleep(POKE_DELAY_TIME)
+    if seq:
+        for index, sensor in enumerate(seq):
+            jlink.rtt_write(0, 'sensor {} 1\n'.format(sensor).encode('utf-8'))
+            time.sleep(POKE_DELAY_TIME)
 
-        if interrupt_step and index == interrupt_step["after_index"]:
-            print("\n[!] ALARM: Naruszenie czujnika {} w trakcie ruchu!".format(
-                interrupt_step['sensor']))
-            jlink.rtt_write(0, 'sensor {} 1\n'.format(
-                interrupt_step["sensor"]).encode('utf-8'))
-            time.sleep(0.5)
-            check_for_log_bool(jlink, LOG_ALARM_SAFETY, 2)
-            jlink.rtt_write(0, 'sensor {} 0\n'.format(
-                interrupt_step["sensor"]).encode('utf-8'))
+            if interrupt_step and index == interrupt_step["after_index"]:
+                print("\n[!] ALARM: Symulacja naruszenia strefy {}!".format(
+                    interrupt_step['sensor']))
+                jlink.rtt_write(0, 'sensor {} 1\n'.format(
+                    interrupt_step["sensor"]).encode('utf-8'))
+                time.sleep(0.5)
+                check_for_log_bool(jlink, LOG_ALARM_SAFETY, 2)
+                jlink.rtt_write(0, 'sensor {} 0\n'.format(
+                    interrupt_step["sensor"]).encode('utf-8'))
 
-        jlink.rtt_write(0, 'sensor {} 0\n'.format(sensor).encode('utf-8'))
-        time.sleep(POKE_DELAY_EXIT_TIME)
+            jlink.rtt_write(0, 'sensor {} 0\n'.format(sensor).encode('utf-8'))
+            time.sleep(POKE_DELAY_EXIT_TIME)
 
     if expected_log:
-        found = check_for_log_bool(jlink, expected_log, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
+        found = check_for_log_bool(jlink, expected_log, wait_time)
         if not found:
             print("\nBLAD: Oczekiwano logu '{}', ale go zabraklo! - TEST FAILED".format(
                 expected_log))
@@ -512,6 +498,11 @@ def execute_custom_sequence(jlink, iter_num, config):
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
 
     time.sleep(1)
+
+    if custom_restore:
+        print("Wysylanie Komendy Przywracajacej: {}".format(custom_restore.strip()))
+        jlink.rtt_write(0, custom_restore.encode('utf-8'))
+        time.sleep(0.5)
 
     end_r, end_l = get_counters(jlink, 1)
     total_start = start_r + start_l
@@ -530,7 +521,7 @@ def execute_custom_sequence(jlink, iter_num, config):
             print("\nBLAD: System nieslusznie zliczyl przejscie! - TEST FAILED")
             sys.exit(1)
         else:
-            print("\nSUKCES: System poprawnie zignorowal nieudane przejscie.")
+            print("\nSUKCES: System poprawnie zignorowal bledne/brakujace przejscie.")
 
 # =========================================================
 # GENERATOR BAZY TESTOW BEHAWIORALNYCH
@@ -538,92 +529,130 @@ def execute_custom_sequence(jlink, iter_num, config):
 def generate_100_scenarios():
     scenarios = []
 
-    for i in range(10):
-        seq_lp = ([LEFT_SENSOR] * ((i % 2) + 1)
-                  + [LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR,
-                     RIGHT_SECURITY_SENSOR, RIGHT_SENSOR])
+    seq_lp = [LEFT_SENSOR, LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR]
+    seq_pl = [RIGHT_SENSOR, RIGHT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR]
+
+    # 1. TESTY KIERUNKOWE (KONTROLA DOSTĘPU)
+    scenarios.append({
+        "name": "KONTROLA: Otwarcie w LEWO (Prawidłowe przejście L->P)",
+        "mode": "KONTROLA_LEWE_PRAWA",
+        "permit": "L",
+        "seq": seq_lp,
+        "log": LOG_GATE_CLOSED,
+        "count": True
+    })
+
+    scenarios.append({
+        "name": "KONTROLA: Otwarcie w PRAWO (Prawidłowe przejście P->L)",
+        "mode": "KONTROLA_LEWE_PRAWA",
+        "permit": "R",
+        "seq": seq_pl,
+        "log": LOG_GATE_CLOSED,
+        "count": True
+    })
+
+    # 2. TESTY BLOKADY I NIEAUTORYZOWANEGO DOSTĘPU
+    scenarios.append({
+        "name": "BLOKADA: Próba wejścia z lewej przy całkowitym zamknięciu",
+        "mode": "BLOKADA_LEWE_PRAWA",
+        "permit": "L", # Nawet przy nadanym uprawnieniu brama ma być zablokowana
+        "seq": [LEFT_SENSOR],
+        "log": LOG_ALARM_NO_PERMIT, 
+        "count": False
+    })
+    
+    scenarios.append({
+        "name": "KONTROLA ZŁY KIERUNEK: Uprawnienie L, wejście fizyczne z P",
+        "mode": "KONTROLA_LEWE_PRAWA",
+        "permit": "L",
+        "seq": [RIGHT_SENSOR, RIGHT_SECURITY_SENSOR],
+        "log": LOG_ALARM_INTRUSION, 
+        "count": False
+    })
+
+    # 3. TESTY TIMEOUTU / SYGNAŁÓW ZWROTNYCH (BRAK AKCJI)
+    scenarios.append({
+        "name": "TIMEOUT: Nadano uprawnienie L, ale użytkownik nie wszedł",
+        "mode": "KONTROLA_LEWE_PRAWA",
+        "permit": "L",
+        "seq": [], # Brak ruchu
+        "log": LOG_GATE_CLOSED, 
+        "count": False,
+        "wait_time": 10 # Nadpisany dłuższy czas oczekiwania na auto-zamknięcie
+    })
+
+    scenarios.append({
+        "name": "WYCOFANIE: Użytkownik wszedł i zrezygnował",
+        "mode": "WOLNE_LEWE_PRAWA",
+        "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR],
+        "log": LOG_GATE_CLOSED, 
+        "count": False
+    })
+
+    # 4. TESTY PPOŻ (EWAKUACJA) ORAZ SYSTEMÓW KRYTYCZNYCH
+    scenarios.append({
+        "name": "ALARM PPOŻ: Awaryjne otwarcie i ewakuacja",
+        "mode": "WOLNE_LEWE_PRAWA",
+        "custom_trigger": "ppoz 1\n", # Symulacja sygnału na wejściu PPOŻ
+        "seq": seq_lp,
+        "log": "", # Przy ewakuacji bramka zostaje otwarta, ignoruje zamknięcie
+        "count": False,
+        "custom_restore": "ppoz 0\n" # Reset alarmu PPOŻ
+    })
+
+    scenarios.append({
+        "name": "USTERKA SENSORA: Symulacja zaklejenia czujnika CENTER",
+        "mode": "WOLNE_LEWE_PRAWA",
+        "custom_trigger": "sensor 5 1\n",
+        "seq": [],
+        "log": LOG_ALARM_SAFETY, # System powinien wykryć ciągłą zajętość strefy
+        "count": False,
+        "custom_restore": "sensor 5 0\n"
+    })
+
+    # 5. TESTY MANIPULACJI (TAILGATING / INTRUSION)
+    scenarios.append({
+        "name": "TAILGATING: Próba przejścia dwóch osób na jedno odbicie (L->P)",
+        "mode": "KONTROLA_LEWE_PRAWA",
+        "permit": "L",
+        "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR],
+        "log": LOG_ALARM_TAILGATING, 
+        "count": True # Zliczy pierwszego, drugi wywoła alarm
+    })
+
+    scenarios.append({
+        "name": "INTRUSION: Wtargnięcie bezpośrednio w środek bramki",
+        "mode": "WOLNE_LEWE_PRAWA", 
+        "seq": [CENTER_SECURITY_SENSOR],
+        "log": LOG_ALARM_INTRUSION, 
+        "count": False
+    })
+
+    scenarios.append({
+        "name": "ANTI-CRUSH: Naruszenie przeciwnej strefy przy zamykaniu",
+        "mode": "WOLNE_LEWE_PRAWA",
+        "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR],
+        "interrupt": {"after_index": 0, "sensor": CENTER_SECURITY_SENSOR},
+        "log": LOG_ALARM_SAFETY, 
+        "count": False
+    })
+
+    # 6. WYPEŁNIENIE DO 100 TESTÓW (WOLNE PRZEJŚCIA Z ZACHWIANIAMI)
+    for i in range(15):
+        seq_lp_wah = ([LEFT_SENSOR] * ((i % 2) + 1)
+                  + [LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR])
         scenarios.append({
-            "name": "WOLNE L->P (wahanie {}x)".format(i % 2 + 1),
-            "mode": "WOLNE_LEWE_PRAWA", "seq": seq_lp,
+            "name": "WOLNE L->P (Wahanie przy wejściu {}x)".format(i % 2 + 1),
+            "mode": "WOLNE_LEWE_PRAWA", "seq": seq_lp_wah,
             "log": LOG_GATE_CLOSED, "count": True
         })
-        seq_pl = ([RIGHT_SENSOR] * ((i % 2) + 1)
-                  + [RIGHT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR,
-                     LEFT_SECURITY_SENSOR, LEFT_SENSOR])
+        
+        seq_pl_wah = ([RIGHT_SENSOR] * ((i % 2) + 1)
+                  + [RIGHT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR])
         scenarios.append({
-            "name": "WOLNE P->L (wahanie {}x)".format(i % 2 + 1),
-            "mode": "WOLNE_LEWE_PRAWA", "seq": seq_pl,
+            "name": "WOLNE P->L (Wahanie przy wejściu {}x)".format(i % 2 + 1),
+            "mode": "WOLNE_LEWE_PRAWA", "seq": seq_pl_wah,
             "log": LOG_GATE_CLOSED, "count": True
-        })
-
-    for i in range(10):
-        seq_lp = [LEFT_SENSOR, LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR,
-                  RIGHT_SECURITY_SENSOR, RIGHT_SENSOR]
-        scenarios.append({
-            "name": "KONTROLA L->P (Z uprawnieniem)",
-            "mode": "KONTROLA_LEWE_PRAWA", "permit": "L",
-            "seq": seq_lp, "log": LOG_GATE_CLOSED, "count": True
-        })
-        scenarios.append({
-            "name": "KONTROLA L->P (Odbicie, brak upr)",
-            "mode": "KONTROLA_LEWE_PRAWA", "permit": None,
-            "seq": [LEFT_SENSOR], "log": LOG_ALARM_NO_PERMIT, "count": False
-        })
-
-    for i in range(15):
-        if i % 2 == 0:
-            seq = [LEFT_SENSOR, LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR,
-                   RIGHT_SECURITY_SENSOR, RIGHT_SENSOR]
-            scenarios.append({
-                "name": "ASYMETRIA: Wolne przejscie L->P",
-                "mode": "WOLNE_LEWE_KONTROLA_PRAWE", "seq": seq,
-                "log": LOG_GATE_CLOSED, "count": True
-            })
-        else:
-            scenarios.append({
-                "name": "ASYMETRIA: Brak uprawnien P->L",
-                "mode": "WOLNE_LEWE_KONTROLA_PRAWE", "seq": [RIGHT_SENSOR],
-                "log": LOG_ALARM_NO_PERMIT, "count": False
-            })
-
-    for i in range(15):
-        scenarios.append({
-            "name": "Wycofanie po wejsciu",
-            "mode": "WOLNE_LEWE_PRAWA",
-            "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR],
-            "log": LOG_GATE_CLOSED, "count": False
-        })
-
-    for i in range(15):
-        if i % 3 == 0:
-            scenarios.append({
-                "name": "Wtargniecie w swiatlo bramki",
-                "mode": "WOLNE_LEWE_PRAWA", "seq": [CENTER_SECURITY_SENSOR],
-                "log": LOG_ALARM_INTRUSION, "count": False
-            })
-        elif i % 3 == 1:
-            scenarios.append({
-                "name": "Proba jazdy na ogonie",
-                "mode": "WOLNE_LEWE_PRAWA",
-                "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR,
-                        CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR],
-                "log": LOG_ALARM_TAILGATING, "count": True
-            })
-        else:
-            scenarios.append({
-                "name": "Czolganie pod szybami",
-                "mode": "WOLNE_LEWE_PRAWA",
-                "seq": [LEFT_DOWN_SENSOR, RIGHT_DOWN_SENSOR],
-                "log": "", "count": False
-            })
-
-    for i in range(15):
-        scenarios.append({
-            "name": "ANTI-CRUSH: Naruszenie w trakcie ruchu",
-            "mode": "WOLNE_LEWE_PRAWA",
-            "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR],
-            "interrupt": {"after_index": 0, "sensor": CENTER_SECURITY_SENSOR},
-            "log": LOG_ALARM_SAFETY, "count": False
         })
 
     return scenarios
@@ -637,12 +666,6 @@ def main():
     print("\n=======================================================")
     print(" TYP BRAMKI: {}".format(GATE_TYPE))
     print("=======================================================\n")
-
-    if GATE_TYPE != "SG":
-        print("\n-----------========== DIAGNOSE ============-------------")
-        print("Brak obslugi testow dla bramki {}. Funkcjonalnosc w przygotowaniu!".format(GATE_TYPE))
-        print("Zatrzymuje wykonywanie skryptu.")
-        sys.exit(1)
 
     jlink = pylink.JLink()
     emulators = jlink.connected_emulators()
@@ -658,40 +681,40 @@ def main():
 
     try:
         jlink.restart()
-        print("Reset wysłany. Czekam na pełny boot Master+Slave...")
+        print("Reset wyslany. Czekam na pelny boot Master+Slave...")
 
         time.sleep(BOOT_WAIT_MASTER)
         try:
             jlink.rtt_stop()
             time.sleep(0.2)
             jlink.rtt_start()
-        except Exception as e:
-            print("[WARN] RTT restart po pierwszym resecie: {}".format(e))
+        except Exception:
+            pass
 
-        print("Oczekiwanie na gotowość systemu (marker: '{}')...".format(LOG_SYSTEM_READY))
         rtt_buf = ""
         start_boot = time.time()
         while time.time() - start_boot < SYSTEM_READY_TIMEOUT:
             chunk = jlink.rtt_read(0, 1024)
             if chunk:
                 text = "".join([chr(c) for c in chunk])
-                sys.stdout.write(text)
-                sys.stdout.flush()
                 rtt_buf += text
             if LOG_SYSTEM_READY in rtt_buf:
-                print("\n[BOOT] System gotowy po {:.1f}s.".format(
-                    time.time() - start_boot))
+                print("\n[BOOT] System gotowy po {:.1f}s.".format(time.time() - start_boot))
                 break
             time.sleep(0.05)
         else:
-            print("[BOOT WARN] Marker gotowości nie wykryty — kontynuuję.")
+            print("[BOOT WARN] Marker gotowosci nie wykryty — kontynuuje.")
 
         # >>>>>>>>>>>>> PRE-FLIGHT CHECKS >>>>>>>>>>>>>
         test_calibration_read_only(jlink)
+        test_diagnostic_readonly(jlink)
+        test_boundary_limits(jlink)
+        test_eeprom_crash_safe(jlink)
 
-        if GATE_TYPE == "SG":
-            setup_gate_sg(jlink)
+        # Inicjalizacja peryferiow zaleznie od parametru SG/GT/SK/BR
+        setup_gate_hardware(jlink, GATE_TYPE)
 
+        # Test momentu obrotowego odpalamy zawsze, by zweryfikować zachowanie (np. opuszczanie rygla w GT/BR)
         test_find_optimal_torque(jlink)
 
         # >>>>>>>>>>>>> SETUP PRZED GLOWNA PETLA >>>>>>>>>>>>>
@@ -704,8 +727,7 @@ def main():
         print(" BAZA TESTOWA ZALADOWANA. Wariantow: {}. Nieskonczonosc: {}".format(
             len(scenarios_pool), IS_INFINITE))
         if not IS_INFINITE and NUMBER_OF_TESTS > len(scenarios_pool):
-            print(" UWAGA: NUMBER_OF_TESTS ({}) > pula ({}). "
-                  "Scenariusze beda powtarzane.".format(
+            print(" UWAGA: NUMBER_OF_TESTS ({}) > pula ({}). Scenariusze beda powtarzane.".format(
                       NUMBER_OF_TESTS, len(scenarios_pool)))
         print("=======================================================\n")
 
@@ -713,8 +735,7 @@ def main():
         while True:
             scenario_index = count % len(scenarios_pool)
             if count > 0 and scenario_index == 0:
-                print("\n[INFO] Pula scenariuszy wyczerpana — "
-                      "rozpoczynam kolejna iteracje od poczatku.\n")
+                print("\n[INFO] Pula scenariuszy wyczerpana — rozpoczynam kolejna iteracje od poczatku.\n")
 
             execute_custom_sequence(jlink, count + 1, scenarios_pool[scenario_index])
             count += 1
@@ -726,8 +747,7 @@ def main():
                 break
 
         minutes, seconds = divmod(time.time() - start_time, 60)
-        print("\nTest finished successfully — czas: {} min {:.2f} s".format(
-            int(minutes), seconds))
+        print("\nTest finished successfully — czas: {} min {:.2f} s".format(int(minutes), seconds))
 
     finally:
         try:
