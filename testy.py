@@ -251,21 +251,21 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
 
     time.sleep(delay)
 
-    # Odporna pętla ponowień RTT Start (czeka aż firmware zainicjalizuje bufor RTT)
+    # Bardziej odporna pętla ponowień RTT Start
     rtt_started = False
     start_rtt_time = time.time()
-    while time.time() - start_rtt_time < 5.0:
+    while time.time() - start_rtt_time < 6.0:
         try:
             jlink.rtt_stop()
         except Exception:
             pass
-        time.sleep(0.2)
+        time.sleep(0.3)
         try:
             jlink.rtt_start()
             rtt_started = True
             break
         except Exception:
-            time.sleep(0.4)
+            time.sleep(0.5)
 
     if not rtt_started:
         print("[WARN] Nie udalo sie wznowic RTT automatycznie.")
@@ -290,7 +290,7 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
 
     if link_found:
         print("   [BOOT] Wykryto marker Master<->Slave. System w 100% gotowy.")
-        time.sleep(0.5)
+        time.sleep(1.0) # Dodatkowa chwila na stabilizację zadań we FreeRTOS
     else:
         print("   [BOOT WARN] Nie przechwycono logu startowego (MCU wstal zbyt szybko).")
         print("   [BOOT PING] Wysylam ping diagnostyczny (tryb pracy ID 0)...")
@@ -408,22 +408,24 @@ def test_eeprom_crash_safe(jlink):
         print("  [BLAD KRYTYCZNY] Nie udalo sie nadpisac zmiennej (ID: {})! Test przerwany.".format(test_id))
         sys.exit(1)
 
-    print("  [OK] Zmienna testowa ustawiona. Czekam 1s na zatwierdzenie w pamieci Flash...")
-    time.sleep(1.0)
+    print("  [OK] Zmienna testowa ustawiona. Czekam 2s na zatwierdzenie w pamieci Flash...")
+    time.sleep(2.0)
 
     print("  [OK] Wymuszam twardy reset...")
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
     
-    time.sleep(2.0)
+    # Dłuższy bufor czasowy na pełny rozruch CLI po resecie
+    time.sleep(3.0)
     drain_rtt(jlink, 4096)
 
     digits = []
-    for attempt in range(5):
-        response = rtt_get_param(jlink, test_id, timeout_sec=2.5)
+    for attempt in range(8):
+        print("  [Odczyt po restarcie - próba {}/8]".format(attempt + 1))
+        response = rtt_get_param(jlink, test_id, timeout_sec=3.0)
         digits = re.findall(r'\d+', response.replace('get {}'.format(test_id), ''))
         if digits:
             break
-        time.sleep(1.0)
+        time.sleep(1.5)
     
     jlink.rtt_write(0, 'set {} 1\n'.format(test_id).encode('utf-8'))
     time.sleep(0.5)
