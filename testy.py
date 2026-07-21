@@ -164,14 +164,27 @@ def get_counters(jlink, timeout_sec=1.0):
 # =========================================================
 # FUNKCJE RTT (GET / SET / VERIFY)
 # =========================================================
+
 def rtt_get_param(jlink, idx, timeout_sec=1.0):
-    jlink.rtt_write(0, 'get {}\n'.format(idx).encode('utf-8'))
+    # Drenaż bufora przed nowym zapytaniem, by nie odczytać starych śmieci
+    try:
+        jlink.rtt_read(0, 4096)
+    except Exception:
+        pass
+
+    # Używamy \r\n jako pełnego znaku powrotu karetki i nowej linii
+    jlink.rtt_write(0, 'get {}\r\n'.format(idx).encode('utf-8'))
     start_t = time.time()
     rtt = ''
+    
+    # Odczyt asynchroniczny dużych bloków pamięci (zamiast 1 bajta)
     while time.time() - start_t < timeout_sec:
-        char = jlink.rtt_read(0, 1)
-        if len(char) == 1:
-            rtt += chr(char[0])
+        chunk = jlink.rtt_read(0, 1024)
+        if chunk:
+            text = "".join([chr(c) for c in chunk])
+            rtt += text
+        time.sleep(0.01) # Lekki odpoczynek dla procesora ułatwiający buforowanie OS
+        
     return rtt
 
 def rtt_set_and_verify(jlink, idx, val, is_remote=False):
@@ -187,7 +200,9 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
         except Exception as e:
             print("   [WARN] Pre-write drain error (ignored): {}".format(e))
 
-        jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
+        # Wysłanie komendy set wraz ze znakami powrotu karetki
+        cmd = 'set {} {}\r\n'.format(idx, val)
+        jlink.rtt_write(0, cmd.encode('utf-8'))
 
         collected_logs = ""
         start_monitor = time.time()
@@ -200,7 +215,7 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
                 sys.stdout.write(text)
                 sys.stdout.flush()
                 collected_logs += text
-            time.sleep(0.01)
+            time.sleep(0.05)
 
         print("\n   [MONITOR] Zakończono okno nasłuchu.")
 
@@ -209,26 +224,44 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
             print("   [KATASTROFA] Wykryto sprzętowy RESET/WATCHDOG w logach podczas zapisu!")
             return False, collected_logs
 
-        jlink.rtt_write(0, b'\n')
+        # Wymuszenie ew. komendy zapisu do EEPROM/Flash (urządzenie zignoruje to, jeśli nie zna komendy)
+        jlink.rtt_write(0, b'save\r\n')
         time.sleep(0.2)
+
         try:
-            jlink.rtt_read(0, 256)
+            jlink.rtt_read(0, 4096) # Czyszczenie przed GET
         except Exception:
             pass
 
         resp = rtt_get_param(jlink, idx, 1.5 if is_remote else 1.0)
         print("   [DEBUG-RTT] Odpowiedz na GET: {}".format(repr(resp)))
 
-        clean_resp = resp.replace('get {}\n'.format(idx), '')
+        # 1. Usunięcie znaków sterujących i kodów koloru ANSI
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        clean_resp = ansi_escape.sub('', resp)
+        clean_resp = clean_resp.replace('get {}\r\n'.format(idx), '').replace('get {}\n'.format(idx), '')
+
+        # 2. Wyciągnięcie samych liczb
         digits = re.findall(r'\d+', clean_resp)
 
         if digits:
-            read_val = int(digits[-1])
-            if read_val == val:
+            # Weryfikacja bezpośrednio szukająca oczekiwanej wartości (najodporniejsza metoda)
+            if str(val) in digits:
                 print("   [SUKCES] Parametr poprawnie zweryfikowany.")
                 return True, collected_logs
             else:
-                print("   [SYNC FAIL] Zgłasza {}, oczekiwano {}. Ponawiam...".format(
+                # W ramach zapasu (fallback), szukamy liczby znajdującej się tuż po indeksie
+                read_val = int(digits[-1])
+                for i, d in enumerate(digits):
+                    if d == str(idx) and i + 1 < len(digits):
+                        read_val = int(digits[i+1])
+                        break
+                
+                if read_val == val:
+                    print("   [SUKCES] Parametr poprawnie zweryfikowany.")
+                    return True, collected_logs
+
+                print("   [SYNC FAIL] Zgłasza odczyt: {}, oczekiwano {}. Ponawiam...".format(
                     read_val, val))
         else:
             print("   [SYNC FAIL] Brak jasnej odpowiedzi cyfrowej na GET.")
