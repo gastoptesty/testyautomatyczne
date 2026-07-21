@@ -232,13 +232,18 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
     if delay is None:
         delay = BOOT_WAIT_MASTER
 
-    jlink.rtt_write(0, b'reset\n')
-    print("   [RESET] Wymuszono reset sprzetowy. Czekam na boot MCU...")
+    print("   [RESET] Wymuszono reset sprzetowy przez SWD. Czekam na boot MCU...")
+    try:
+        jlink.restart()  # Twardy reset SWD zamiast wysylania komendy UART
+    except Exception as e:
+        print("   [WARN] Blad jlink.restart(): {}. Uzywam komendy konsolowej...".format(e))
+        jlink.rtt_write(0, b'reset\n')
+
     time.sleep(delay)
 
     try:
         jlink.rtt_stop()
-        time.sleep(0.2)
+        time.sleep(0.5)
         jlink.rtt_start()
     except Exception as e:
         print("[WARN] RTT restart napotkal blad: {}".format(e))
@@ -266,13 +271,13 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
         time.sleep(0.5)
     else:
         print("   [BOOT WARN] Nie przechwycono logu startowego (MCU wstal zbyt szybko).")
-        print("   [BOOT PING] Wysylam ping diagnostyczny, by sprawdzic czy brama zyje...")
+        print("   [BOOT PING] Wysylam ping diagnostyczny (tryb pracy ID 0)...")
         
         ping_resp = rtt_get_param(jlink, 0, timeout_sec=2.0)
         if re.findall(r'\d+', ping_resp):
             print("   [BOOT OK] Brama zyje i odpowiada na zapytania RTT. Bezpieczny zapis mozliwy.")
         else:
-            print("   [BOOT FATAL] Brama nie odpowiada! Ryzyko WDG lub Boot-Loop.")
+            print("   [BOOT FATAL] Brama nie odpowiada! Ryzyko WDG lub rozlaczenia J-Link.")
             time.sleep(BOOT_WAIT_LINK)
 
 # =========================================================
@@ -345,9 +350,9 @@ def test_boundary_limits(jlink):
 
 def test_eeprom_crash_safe(jlink):
     print("\n[PRE-CHECK] Test trwalosci atomowego zapisu EEPROM...")
-    # Wykorzystujemy ID 55 (INVITATION_MODE) wg pliku comm.h
-    test_id = 55 
-    test_val = 1 
+    # Wykorzystujemy ID 28 (MAX_TORQUE_SILNIK). Zaraz potem i tak robimy kalibracje momentu.
+    test_id = 28 
+    test_val = 14 
     
     status, logs = rtt_set_and_verify(jlink, test_id, test_val, is_remote=False)
     if not status:
@@ -360,14 +365,14 @@ def test_eeprom_crash_safe(jlink):
     response = rtt_get_param(jlink, test_id, timeout_sec=3.0)
     digits = re.findall(r'\d+', response.replace('get {}'.format(test_id), ''))
     
-    # Sprzatanie przed weryfikacja
-    jlink.rtt_write(0, 'set {} 0\n'.format(test_id).encode('utf-8'))
+    # Sprzatanie (resetujemy do niskiej wartosci przed poszukiwaniem momentu)
+    jlink.rtt_write(0, 'set {} 1\n'.format(test_id).encode('utf-8'))
     time.sleep(0.5)
 
     if digits and int(digits[-1]) == test_val:
         print("  [OK] Dane we Flash (EEPROM) sa bezpieczne, przetrwaly nagly reset!")
     else:
-        val_read = digits[-1] if digits else "Brak"
+        val_read = digits[-1] if digits else "Brak odpowiedzi (RTT martwe lub zmienna pusta)"
         print("  [BLAD KRYTYCZNY] Utrata danych po restarcie! Skrypt odczytal: {}".format(val_read))
         sys.exit(1)
 
@@ -572,7 +577,7 @@ def generate_100_scenarios():
     scenarios.append({
         "name": "BLOKADA: Proba wejscia z lewej przy calkowitym zamknieciu",
         "mode": "BLOKADA_LEWE_PRAWA",
-        "permit": "L", # Nawet przy nadanym uprawnieniu brama ma byc zablokowana
+        "permit": "L", 
         "seq": [LEFT_SENSOR],
         "log": LOG_ALARM_NO_PERMIT, 
         "count": False
@@ -592,10 +597,10 @@ def generate_100_scenarios():
         "name": "TIMEOUT: Nadano uprawnienie L, ale uzytkownik nie wszedl",
         "mode": "KONTROLA_LEWE_PRAWA",
         "permit": "L",
-        "seq": [], # Brak ruchu
+        "seq": [], 
         "log": LOG_GATE_CLOSED, 
         "count": False,
-        "wait_time": 10 # Nadpisany dluzszy czas oczekiwania na auto-zamkniecie
+        "wait_time": 10 
     })
 
     scenarios.append({
@@ -610,11 +615,11 @@ def generate_100_scenarios():
     scenarios.append({
         "name": "ALARM PPOZ: Awaryjne otwarcie i ewakuacja",
         "mode": "WOLNE_LEWE_PRAWA",
-        "custom_trigger": "ppoz 1\n", # Symulacja sygnalu na wejsciu PPOZ
+        "custom_trigger": "ppoz 1\n", 
         "seq": seq_lp,
-        "log": "", # Przy ewakuacji bramka zostaje otwarta, ignoruje zamkniecie
+        "log": "", 
         "count": False,
-        "custom_restore": "ppoz 0\n" # Reset alarmu PPOZ
+        "custom_restore": "ppoz 0\n" 
     })
 
     scenarios.append({
@@ -622,7 +627,7 @@ def generate_100_scenarios():
         "mode": "WOLNE_LEWE_PRAWA",
         "custom_trigger": "sensor 5 1\n",
         "seq": [],
-        "log": LOG_ALARM_SAFETY, # System powinien wykryc ciagla zajetosc strefy
+        "log": LOG_ALARM_SAFETY, 
         "count": False,
         "custom_restore": "sensor 5 0\n"
     })
@@ -634,7 +639,7 @@ def generate_100_scenarios():
         "permit": "L",
         "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR],
         "log": LOG_ALARM_TAILGATING, 
-        "count": True # Zliczy pierwszego, drugi wywola alarm
+        "count": True 
     })
 
     scenarios.append({
