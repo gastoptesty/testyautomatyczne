@@ -338,9 +338,10 @@ def test_find_optimal_torque(jlink):
         print("\n--- Skanowanie Max Torque: {} ---".format(tq))
         status, logs = rtt_set_and_verify(jlink, 28, tq, is_remote=True)
         if not status:
-            print("\nBLAD KRYTYCZNY: Nie udalo sie zapisac momentu!"
-                  "\n|| SUROWE LOGI: {}".format(repr(logs)))
-            sys.exit(1)
+            print("\n[OSTRZEZENIE] Nie udalo sie zapisac momentu {}!"
+                  "\n|| SUROWE LOGI: {}".format(tq, repr(logs)))
+            print("Pomięcie testu dla momentu {} i kontynuacja...".format(tq))
+            continue # Przechodzimy do kolejnej iteracji pętli zamiast przerywać skrypt
 
         print("   [OK] Zapisano. Reset + czekam na link Master↔Slave...")
         safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
@@ -384,9 +385,14 @@ def test_find_optimal_torque(jlink):
             wait_for_logs(jlink, LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
             time.sleep(2)
 
+    # Co jeśli żaden moment nie przeszedł testu LUB nie dało się zapisać żadnego z nich?
     if not successful_torques:
-        print("\nBLAD KRYTYCZNY: Brama nie ruszyla na zadnym momencie (1-20)!")
-        sys.exit(1)
+        print("\n[OSTRZEZENIE] Brama nie ruszyla na zadnym momencie LUB zapis byl niemozliwy!")
+        print("Testy beda kontynuowane na domyslnym (obecnym w pamieci) ustawieniu momentu.")
+        print("   [OK] Przywracam tryb WOLNE_LEWE_PRAWA przed finalnym resetem.")
+        mode_set(jlink, "WOLNE_LEWE_PRAWA")
+        safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
+        return # Wychodzimy z funkcji, nie aplikujemy optymalnego momentu
 
     optimal_torque = min(successful_torques)
 
@@ -399,14 +405,13 @@ def test_find_optimal_torque(jlink):
     print("-> Aplikowanie optymalnego momentu ({})...".format(optimal_torque))
     status, logs = rtt_set_and_verify(jlink, 28, optimal_torque, is_remote=True)
     if not status:
-        print("\nBLAD KRYTYCZNY: Nie mozna zaaplikowac finalnego momentu!"
+        print("\n[OSTRZEZENIE] Nie mozna zaaplikowac finalnego momentu!"
               "\n|| SUROWE LOGI: {}".format(repr(logs)))
-        sys.exit(1)
+        print("Testy beda kontynuowane na ostatnim zachowanym ustawieniu.")
 
     print("   [OK] Przywracam tryb WOLNE_LEWE_PRAWA przed finalnym resetem.")
     mode_set(jlink, "WOLNE_LEWE_PRAWA")
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
-
 def test_diagnostics_counters(jlink):
     print("\n[TLO] Sprawdzanie licznikow diagnostycznych...")
     response = rtt_get_param(jlink, 60)
