@@ -287,18 +287,20 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
 # =========================================================
 # PRE-FLIGHT CHECKS
 # =========================================================
-def # >>>>>>>>>>>>> PRE-FLIGHT CHECKS >>>>>>>>>>>>>
-        test_calibration_read_only(jlink)
-        
-        # Konfiguracja specyficzna dla typu bramki
-        if GATE_TYPE == "SG":
-            setup_gate_sg(jlink)
-            
-        test_find_optimal_torque(jlink)
+def test_calibration_read_only(jlink):
+    print("\n[PRE-CHECK] Sprawdzanie bezpieczenstwa kalibracji...")
+    response = rtt_get_param(jlink, 7)
+    digits = re.findall(r'\d+', response.replace('get 7', ''))
+    if not digits:
+        print("Nie udalo sie odczytac kalibracji! Zatrzymuje test.")
+        sys.exit(1)
 
-        # >>>>>>>>>>>>> SETUP PRZED GLOWNA PETLA >>>>>>>>>>>>>
-        mode_set(jlink, "WOLNE_LEWE_PRAWA")
-    
+    calib_val = int(digits[-1])
+    if calib_val < 0 or calib_val > 4:
+        print("BLAD: Kalibracja poza zakresem: {}. Zatrzymuje test!".format(calib_val))
+        sys.exit(1)
+    print("Kalibracja w normie. Odczytana wartosc: {}".format(calib_val))
+
 def setup_gate_sg(jlink):
     """
     Wymusza konfigurację sprzętową specyficzną dla bramki SG:
@@ -307,28 +309,26 @@ def setup_gate_sg(jlink):
     """
     print("\n[SETUP] Konfiguracja sprzetowa dla bramki SG (Tylko Hamulec + Silniki)...")
 
-    # 1. Włączamy Hamulec (idx 32 = 1) [EE remote]
+    # Włączamy Hamulec (idx 32 = 1) [EE remote]
     status, logs = rtt_set_and_verify(jlink, 32, 1, is_remote=True)
     if not status:
         print("\nBLAD KRYTYCZNY: Nie udalo sie wlaczyc hamulca (idx 32)!")
         sys.exit(1)
 
-    # 2. Wyłączamy Rygle (idx 34 = 0) [EE remote]
+    # Wyłączamy Rygle (idx 34 = 0) [EE remote]
     status, logs = rtt_set_and_verify(jlink, 34, 0, is_remote=True)
     if not status:
         print("\nBLAD KRYTYCZNY: Nie udalo sie wylaczyc rygli (idx 34)!")
         sys.exit(1)
 
-    # Opcjonalnie: Wyłączamy rotację zbijaka (idx 38 = 0) [EE remote]
+    # Wyłączamy rotację zbijaka (idx 38 = 0) [EE remote]
     status, logs = rtt_set_and_verify(jlink, 38, 0, is_remote=True)
     if not status:
         print("\nBLAD KRYTYCZNY: Nie udalo sie wylaczyc zbijaka (idx 38)!")
         sys.exit(1)
 
-    # Po zmianie parametrów EE remote wykonujemy bezpieczny restart,
-    # aby oprogramowanie wstało z nową, czystą konfiguracją peryferiów.
     print("   [OK] Konfiguracja sprzętowa SG zapisana. Reset + czekam na link Master↔Slave...")
-    safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)    
+    safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
 
 def test_find_optimal_torque(jlink):
     print("\n[PRE-CHECK] Pelne skanowanie Max Torque (1-20, EE remote)...")
@@ -602,7 +602,6 @@ def main():
     print(" TYP BRAMKI: {}".format(GATE_TYPE))
     print("=======================================================\n")
 
-    # Bezpiecznik: jeśli wybrana brama nie jest SG, anulujemy test.
     if GATE_TYPE != "SG":
         print("\n-----------========== DIAGNOSE ============-------------")
         print("Brak obslugi testow dla bramki {}. Funkcjonalnosc w przygotowaniu!".format(GATE_TYPE))
@@ -651,9 +650,15 @@ def main():
         else:
             print("[BOOT WARN] Marker gotowości nie wykryty — kontynuuję.")
 
+        # >>>>>>>>>>>>> PRE-FLIGHT CHECKS >>>>>>>>>>>>>
         test_calibration_read_only(jlink)
+
+        if GATE_TYPE == "SG":
+            setup_gate_sg(jlink)
+
         test_find_optimal_torque(jlink)
 
+        # >>>>>>>>>>>>> SETUP PRZED GLOWNA PETLA >>>>>>>>>>>>>
         mode_set(jlink, "WOLNE_LEWE_PRAWA")
         right_counter, left_counter = get_counters(jlink, 1)
 
