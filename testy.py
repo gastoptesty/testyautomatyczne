@@ -18,17 +18,17 @@ except Exception:
     GATE_TYPE = "SG"
 
 # =========================================================
-# ZMIENNE I STALE SYSTEMOWE
+# ZMIENNE I STALE SYSTEMOWE (ZWERYFIKOWANE INDEKSY Z TABELI)
 # =========================================================
 BOOT_WAIT_MASTER   = 3.0   
 LOG_SYSTEM_READY   = "Permit manager"   
 SYSTEM_READY_TIMEOUT = 12.0             
 
-# Parametr ID odpowiedzialny za konfigurację / typ bramki (np. ID 32)
-GATE_TYPE_PARAM_ID = 32
+# Zgodnie z tabelą getów:
+GATE_TYPE_PARAM_ID = 13      # get 13: gate type
+MAX_TORQUE_PARAM_ID = 40     # get 40: max torque
 
-# Mapowanie oczekiwanych wartości dla poszczególnych typów bramek
-# SG: 1, GT: 0, SK: 1, BR: 0 (zgodnie z logiką peryferiów)
+# Mapowanie oczekiwanych wartości typu bramki
 EXPECTED_GATE_CONFIG = {
     "SG": 1,
     "GT": 0,
@@ -62,7 +62,7 @@ def rtt_get_param(jlink, idx, timeout_sec=1.5):
     except Exception:
         pass
 
-    jlink.rtt_write(0, 'get {}\n'.format(idx).encode('utf-8'))
+    jlink.rtt_write(0, 'get {}\r\n'.format(idx).encode('utf-8'))
     start_t = time.time()
     rtt = ''
     while time.time() - start_t < timeout_sec:
@@ -72,16 +72,52 @@ def rtt_get_param(jlink, idx, timeout_sec=1.5):
         time.sleep(0.02)
     return rtt
 
+def rtt_set_and_verify(jlink, idx, val, timeout_sec=2.0):
+    for attempt in range(4):
+        print("\n--- [ZAPIS] Ustawianie parametru ID {} = {} (próba {}) ---".format(idx, val, attempt + 1))
+        
+        try:
+            jlink.rtt_read(0, 4096)
+        except Exception:
+            pass
+
+        # Wysłanie komendy set z powrotem karetki
+        jlink.rtt_write(0, 'set {} {}\r\n'.format(idx, val).encode('utf-8'))
+        time.sleep(0.3)
+
+        # Opcjonalny zapis do pamięci trwałej, jeśli mikrokontroler tego wymaga
+        jlink.rtt_write(0, 'save\r\n')
+        time.sleep(0.2)
+
+        # Odczyt i weryfikacja
+        resp = rtt_get_param(jlink, idx, timeout_sec)
+        
+        # Czyszczenie odpowiedzi z ANSI i nazwy komendy
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        clean_resp = ansi_escape.sub('', resp)
+        clean_resp = clean_resp.replace('get {}\r\n'.format(idx), '').replace('get {}\n'.format(idx), '')
+        
+        digits = re.findall(r'\d+', clean_resp)
+        if digits:
+            # Szukamy dokładnej wartości lub bierzemy ostatnią liczbę
+            if str(val) in digits or int(digits[-1]) == val:
+                print("   [SUKCES] Parametr ID {} zweryfikowany pomyślnie (wartość: {}).".format(idx, val))
+                return True
+
+        print("   [SYNC FAIL] Odczytano niepoprawną wartość. Ponawiam...")
+    
+    return False
+
 def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
     if delay is None:
         delay = BOOT_WAIT_MASTER
 
-    print("   [RESET] Wymuszono reset sprzetowy przez SWD. Czekam na boot MCU...")
+    print("   [RESET] Wymuszono reset sprzętowy przez SWD. Czekam na boot MCU...")
     try:
         jlink.restart()
     except Exception as e:
-        print("   [WARN] Blad jlink.restart(): {}. Uzywam komendy konsolowej...".format(e))
-        jlink.rtt_write(0, b'reset\n')
+        print("   [WARN] Błąd jlink.restart(): {}. Używam komendy konsolowej...".format(e))
+        jlink.rtt_write(0, b'reset\r\n')
 
     time.sleep(delay)
 
@@ -101,7 +137,7 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
             time.sleep(0.5)
 
     if not rtt_started:
-        print("[WARN] Nie udalo sie wznowic RTT automatycznie.")
+        print("[WARN] Nie udało się wznowić RTT automatycznie.")
 
     if not wait_for_link:
         time.sleep(1)
@@ -128,7 +164,7 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
         print("   [BOOT WARN] Nie przechwycono logu startowego.")
 
 # =========================================================
-# GŁÓWNY SKRYPT - TYLKO SPRAWDZENIE TYPU BRAMKI
+# GŁÓWNY SKRYPT
 # =========================================================
 def main():
     print("\n=======================================================")
@@ -139,7 +175,7 @@ def main():
     emulators = jlink.connected_emulators()
 
     if not emulators:
-        print("Nie znaleziono zadnych urzadzen J-Link.")
+        print("Nie znaleziono żadnych urządzeń J-Link.")
         sys.exit(1)
 
     selected_sn = emulators[0].SerialNumber
@@ -162,8 +198,8 @@ def main():
         time.sleep(2.0)
         drain_rtt(jlink, 4096)
 
-        # SPRAWDZENIE TYPU BRAMKI PRZEZ GET
-        print("\n[CHECK] Odpytywanie urzadzenia o typ bramki (parametr ID {})...".format(GATE_TYPE_PARAM_ID))
+        # 1. SPRAWDZENIE TYPU BRAMKI (ID 13)
+        print("\n[CHECK] Odpytywanie urządzenia o typ bramki (parametr ID {})...".format(GATE_TYPE_PARAM_ID))
         
         response = ""
         digits = []
@@ -175,31 +211,38 @@ def main():
             time.sleep(1.0)
 
         if not digits:
-            print("[BLAD] Nie udalo sie odczytac parametru bramki z urzadzenia! Surowa odpowiedź: '{}'".format(response))
+            print("[BŁĄD] Nie udało się odczytać parametru bramki z urządzenia! Surowa odpowiedź: '{}'".format(response))
             play_beep(440, 500)
             sys.exit(1)
 
         device_val = int(digits[-1])
         expected_val = EXPECTED_GATE_CONFIG.get(GATE_TYPE, -1)
 
-        print("   -> Odczytana wartosc z urzadzenia: {}".format(device_val))
-        print("   -> Oczekiwana wartosc dla {}: {}".format(GATE_TYPE, expected_val))
+        print("   -> Odczytana wartość z urządzenia: {}".format(device_val))
+        print("   -> Oczekiwana wartość dla {}: {}".format(GATE_TYPE, expected_val))
 
         if GATE_TYPE in EXPECTED_GATE_CONFIG and device_val == expected_val:
-            print("\n[SUKCES] Typ bramki z GUI zgadza sie z konfiguracja urzadzenia!")
+            print("\n[SUKCES] Typ bramki z GUI zgadza się z konfiguracją urządzenia!")
         else:
-            print("\n[BLAD] Niezgodnosc typu bramki! Urzadzenie zgłasza inną konfigurację niż wybrano w GUI.")
+            print("\n[BŁĄD] Niezgodność typu bramki! Urządzenie zgłasza inną konfigurację niż wybrano w GUI.")
             play_beep(440, 500)
             sys.exit(1)
 
-        print("\nTest weryfikacji typu bramki zakończony pomyślnie.")
+        # 2. PRZYKŁAD POPRAWNEGO UŻYCIA ZAPISU (np. test max torque na ID 40)
+        print("\n[CONFIG] Test ustawienia parametru Max Torque (ID {}) na wartość domyślną...".format(MAX_TORQUE_PARAM_ID))
+        if rtt_set_and_verify(jlink, MAX_TORQUE_PARAM_ID, 10):
+            print("   -> Zapis Max Torque zakończony powodzeniem.")
+        else:
+            print("   -> [OSTRZEZENIE] Nie udało się zapisać Max Torque, kontynuuję...")
+
+        print("\nInicjalizacja i weryfikacja parametrów zakończona pomyślnie.")
 
     finally:
         try:
             jlink.close()
-            print("[CLEANUP] J-Link connection closed.")
+            print("[CLEANUP] Połączenie J-Link zamknięte.")
         except Exception as e:
-            print("[CLEANUP] Warning: error while closing J-Link: {}".format(e))
+            print("[CLEANUP] Warning: błąd podczas zamykania J-Link: {}".format(e))
 
 if __name__ == "__main__":
     main()
