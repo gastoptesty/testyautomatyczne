@@ -1,56 +1,3 @@
-
-Rozmowa z Gemini
-mam do zrobienia testy automatyczne do bramek dostepu. jak pewnie widzisz sa 4 typy bramek. kod runnera jest okej i nie chcialbym go zmieniac natomiast kod testy.py nieudolnie probuje zmienic parametry. dobrze by bylo jakbny to dzialalo ale chcialbym abys zrobil tak ze gdy nie uda sie zmienic parametru to aby to olal i i tak zaczynal test. czy mozesz popraawic testy.py aby tak wlasnie bylo?
-
-Cześć! Jasne, zajmę się tym. Jako sztuczna inteligencja przeanalizowałem podany kod i widzę dokładnie, gdzie program decyduje o zatrzymaniu całego procesu.
-
-Problem leży w funkcji setup_gate_sg w pliku testy.py. Gdy próba nadpisania parametrów za pomocą rtt_set_and_verify się nie powiedzie (status zwraca False), skrypt wzywa sys.exit(1), co bezwzględnie ubija cały test. W innych miejscach Twojego kodu (np. podczas skanowania momentu obrotowego) takie błędy zapisu są już pomyślnie ignorowane.  
-PY
-+ 2
-
-Aby skrypt po prostu "olał" sprawę i szedł dalej, gdy nie uda się zmienić parametru dla bramki SG, podmień funkcję setup_gate_sg na poniższą:
-
-Python
-def setup_gate_sg(jlink):
-    """
-    Wymusza konfigurację sprzętową specyficzną dla bramki SG:
-    - Hamulec aktywny
-    - Rygle i zbijak nieaktywne
-    """
-    print("\n[SETUP] Konfiguracja sprzetowa dla bramki SG (Tylko Hamulec + Silniki)...")
-
-    # Włączamy Hamulec (idx 32 = 1) [EE remote]
-    status, logs = rtt_set_and_verify(jlink, 32, 1, is_remote=True)
-    if not status:
-        print("\n[OSTRZEZENIE] Nie udalo sie wlaczyc hamulca (idx 32)! Ignoruje i kontynuuje test.")
-
-    # Wyłączamy Rygle (idx 34 = 0) [EE remote]
-    status, logs = rtt_set_and_verify(jlink, 34, 0, is_remote=True)
-    if not status:
-        print("\n[OSTRZEZENIE] Nie udalo sie wylaczyc rygli (idx 34)! Ignoruje i kontynuuje test.")
-
-    # Wyłączamy rotację zbijaka (idx 38 = 0) [EE remote]
-    status, logs = rtt_set_and_verify(jlink, 38, 0, is_remote=True)
-    if not status:
-        print("\n[OSTRZEZENIE] Nie udalo sie wylaczyc zbijaka (idx 38)! Ignoruje i kontynuuje test.")
-
-    print("   [OK] Etap konfiguracji sprzetowej SG zakonczony. Reset + czekam na link Master↔Slave...")
-    safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
-Wyrzuciłem funkcje sys.exit(1) i zmieniłem komunikaty z BLAD KRYTYCZNY na OSTRZEZENIE. Od teraz program wypisze jedynie log o tym, że nie dał rady przestawić wartości, po czym wykona reset i i tak zacznie kręcić zaplanowane testy behawioralne.
-
-a mozesz wyslac caly kompletny kod zebym tylko podmienil calosc a nie fragmentami aby zminimalizowac ryzyko popelnienia bledu przeze mnie
-
-Twój plik testy.py jest gotowy:
-Ikona PY
-testy
- PY 
-Otwórz
-
-Możesz go pobrać i całkowicie podmienić swój dotychczasowy plik.
-
-Dla pewności wklejam również pełny kod poniżej, jeśli wolisz go po prostu skopiować i wkleić do swojego edytora:
-
-Python
 import pylink
 import re
 import time
@@ -1470,5 +1417,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-testy.py
-Wyświetlam testy.py.
