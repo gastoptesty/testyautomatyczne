@@ -85,6 +85,7 @@ def wait_for_logs(jlink, log, timeout_sec):
             rtt += text
         if log in rtt:
             return True
+        time.sleep(0.02)
 
     print("\n-----------========== DIAGNOSE ============-------------")
     print("Timeout reached. Log:'{}' not found. - TEST FAILED".format(log))
@@ -103,6 +104,7 @@ def check_for_log_bool(jlink, log, timeout_sec):
             rtt += text
         if log in rtt:
             return True
+        time.sleep(0.02)
     return False
 
 def sensor_poke(jlink, num):
@@ -179,13 +181,10 @@ def parse_get_response(resp, idx):
         if 'manager' in line.lower() or 'alarm' in line.lower() or 'set' in line.lower():
             continue
             
-        # Priorytet 1: Szukamy liczby zaraz po "=" lub ":"
-        # Obsłuży to format np: "28 [slave] Max Torque = 14 [0..20]"
         match = re.search(r'[=:]\s*(-?\d+)', line)
         if match:
             return int(match.group(1))
             
-        # Priorytet 2: Wycinka wszelkich nawiasów kwadratowych i okrągłych
         clean_line = re.sub(r'\[.*?\]|\(.*?\)', '', line)
         digits = re.findall(r'-?\d+', clean_line)
         if digits:
@@ -256,11 +255,9 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
                 print("   [SUKCES] Parametr poprawnie zweryfikowany.")
                 return True, collected_logs
             else:
-                print("   [SYNC FAIL] Zglasza {}, oczekiwano {}. Ponawiam... (Raw: {})".format(
-                    read_val, val, repr(resp.replace('\r', ''))))
+                print("   [SYNC FAIL] Zglasza {}, oczekiwano {}. Ponawiam...".format(read_val, val))
         else:
-            print("   [SYNC FAIL] Brak jasnej odpowiedzi cyfrowej na GET. (Raw: {})".format(
-                repr(resp.replace('\r', ''))))
+            print("   [SYNC FAIL] Brak jasnej odpowiedzi cyfrowej na GET.")
 
     return False, collected_logs
 
@@ -512,15 +509,22 @@ def test_find_optimal_torque(jlink):
                 elif LOG_GATE_OPENED in rtt_buffer:
                     result = "OPENED"
                     break
+            time.sleep(0.05)
 
         if result == "OPENED":
             print("   [V] Moment {} wystarczajacy do ruchu.".format(tq))
             successful_torques.append(tq)
             
-            sensor_poke(jlink, LEFT_SENSOR)
-            sensor_poke(jlink, RIGHT_SENSOR)
-            wait_for_logs(jlink, LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
-            time.sleep(2)
+            print("   [INFO] Symulacja pelnego przejscia L->P dla zresetowania stanu bramki...")
+            seq_lp = [LEFT_SENSOR, LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR]
+            for s in seq_lp:
+                sensor_poke(jlink, s)
+            
+            check_for_log_bool(jlink, LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
+            time.sleep(1)
+
+            print("   [INFO] Przerwano skanowanie kolejnych momentow - znaleziono optymalny.")
+            break
         else:
             print("   [X] Moment {} niewystarczajacy.".format(tq))
 
