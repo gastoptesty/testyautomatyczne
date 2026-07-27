@@ -167,6 +167,31 @@ def get_counters(jlink, timeout_sec=1.0):
 # =========================================================
 # FUNKCJE RTT (GET / SET / VERIFY)
 # =========================================================
+
+def parse_get_response(resp, idx):
+    """
+    Kuloodporny parser, który wycina echo komendy z bufora i pobiera CYFRY
+    Tylko i wyłączenie z pierwszej dostępnej linijki odpowiedzi sprzętowej,
+    ignorując wszystkie inne logi pojawiające się z tła.
+    """
+    # 1. Usuwamy ewentualne echo komendy GET wysłanej z konsoli
+    clean = re.sub(r'(?i).*?get\s+{}\s*[\r\n]+'.format(idx), '', resp)
+    
+    # Rozbijamy na linie
+    lines = [l.strip() for l in clean.split('\n') if l.strip()]
+    
+    for line in lines:
+        # Pomiń losowe logi tła
+        if 'manager' in line.lower() or 'alarm' in line.lower() or 'set' in line.lower():
+            continue
+        
+        digits = re.findall(r'\d+', line)
+        if digits:
+            # Używamy -1 na wypadek gdy odpowiedź brzmi: "28: 14" -> [28, 14] -> 14
+            return int(digits[-1])
+            
+    return None
+
 def rtt_get_param(jlink, idx, timeout_sec=1.5):
     try:
         jlink.rtt_read(0, 4096)
@@ -176,11 +201,13 @@ def rtt_get_param(jlink, idx, timeout_sec=1.5):
     jlink.rtt_write(0, 'get {}\n'.format(idx).encode('utf-8'))
     start_t = time.time()
     rtt = ''
-    # Czytamy przez cały timeout, aby upewnić się, że pobraliśmy odpowiedź z CLI
     while time.time() - start_t < timeout_sec:
         chunk = jlink.rtt_read(0, 1024)
         if chunk:
             rtt += "".join([chr(c) for c in chunk])
+            # Skracamy czas czekania, jeśli odebraliśmy już echo i odpowiedź
+            if rtt.replace('\r', '').count('\n') >= 2:
+                break
         time.sleep(0.02)
     return rtt
 
@@ -222,18 +249,18 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
             pass
 
         resp = rtt_get_param(jlink, idx, 1.5 if is_remote else 1.0)
-        clean_resp = resp.replace('get {}\n'.format(idx), '')
-        digits = re.findall(r'\d+', clean_resp)
+        read_val = parse_get_response(resp, idx)
 
-        if digits:
-            read_val = int(digits[-1])
+        if read_val is not None:
             if read_val == val:
                 print("   [SUKCES] Parametr poprawnie zweryfikowany.")
                 return True, collected_logs
             else:
-                print("   [SYNC FAIL] Zglasza {}, oczekiwano {}. Ponawiam...".format(read_val, val))
+                print("   [SYNC FAIL] Zglasza {}, oczekiwano {}. Ponawiam... (Raw: {})".format(
+                    read_val, val, repr(resp.replace('\r', ''))))
         else:
-            print("   [SYNC FAIL] Brak jasnej odpowiedzi cyfrowej na GET.")
+            print("   [SYNC FAIL] Brak jasnej odpowiedzi cyfrowej na GET. (Raw: {})".format(
+                repr(resp.replace('\r', ''))))
 
     return False, collected_logs
 
@@ -294,7 +321,7 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
         print("   [BOOT PING] Wysylam ping diagnostyczny (tryb pracy ID 0)...")
         
         ping_resp = rtt_get_param(jlink, 0, timeout_sec=2.0)
-        if re.findall(r'\d+', ping_resp):
+        if parse_get_response(ping_resp, 0) is not None:
             print("   [BOOT OK] Brama zyje i odpowiada na zapytania RTT. Bezpieczny zapis mozliwy.")
         else:
             print("   [BOOT FATAL] Brama nie odpowiada! Ryzyko WDG lub rozlaczenia J-Link.")
@@ -308,19 +335,18 @@ def test_calibration_read_only(jlink):
     drain_rtt(jlink, 4096)
     time.sleep(0.5)
 
-    digits = []
+    calib_val = None
     for attempt in range(5):
         response = rtt_get_param(jlink, 7, timeout_sec=2.0)
-        digits = re.findall(r'\d+', response.replace('get 7', ''))
-        if digits:
+        calib_val = parse_get_response(response, 7)
+        if calib_val is not None:
             break
         time.sleep(0.8)
 
-    if not digits:
+    if calib_val is None:
         print("Nie udalo sie odczytac kalibracji! Zatrzymuje test.")
         sys.exit(1)
 
-    calib_val = int(digits[-1])
     if calib_val < 0 or calib_val > 4:
         print("BLAD: Kalibracja poza zakresem: {}. Zatrzymuje test!".format(calib_val))
         sys.exit(1)
@@ -330,32 +356,28 @@ def test_diagnostics_counters(jlink):
     print("\n[TLO] Sprawdzanie licznikow diagnostycznych (wg comm.h)...")
     
     response = rtt_get_param(jlink, 116)
-    digits = re.findall(r'\d+', response.replace('get 116', ''))
-    if digits:
-        err_count = int(digits[-1])
-        if err_count > 0:
-            print("  [OSTRZEZENIE] Wykryto {} bledow komunikacji Master-Slave!".format(err_count))
+    err_count = parse_get_response(response, 116)
+    if err_count is not None and err_count > 0:
+        print("  [OSTRZEZENIE] Wykryto {} bledow komunikacji Master-Slave!".format(err_count))
             
     response_wwdg = rtt_get_param(jlink, 112)
-    digits_wwdg = re.findall(r'\d+', response_wwdg.replace('get 112', ''))
-    if digits_wwdg:
-        wwdg_count = int(digits_wwdg[-1])
-        if wwdg_count > 0:
-            print("  [OSTRZEZENIE] Krytyczne resety WWDG: {}!".format(wwdg_count))
+    wwdg_count = parse_get_response(response_wwdg, 112)
+    if wwdg_count is not None and wwdg_count > 0:
+        print("  [OSTRZEZENIE] Krytyczne resety WWDG: {}!".format(wwdg_count))
 
 def test_diagnostic_readonly(jlink):
     print("\n[PRE-CHECK] Test ochrony parametrow diagnostycznych (Uptime - ID 118)...")
     drain_rtt(jlink, 4096)
     
-    digits = []
+    uptime_val = None
     for attempt in range(3):
         response = rtt_get_param(jlink, 118, timeout_sec=2.0)
-        digits = re.findall(r'\d+', response.replace('get 118', ''))
-        if digits:
+        uptime_val = parse_get_response(response, 118)
+        if uptime_val is not None:
             break
         time.sleep(0.5)
         
-    if not digits:
+    if uptime_val is None:
         print("  [WARN] Brak odpowiedzi dla ID 118, pomijam ten konkretny check.")
         return
         
@@ -363,9 +385,9 @@ def test_diagnostic_readonly(jlink):
     time.sleep(0.5)
 
     response_new = rtt_get_param(jlink, 118, timeout_sec=2.0)
-    new_digits = re.findall(r'\d+', response_new.replace('get 118', ''))
-    if new_digits:
-        new_uptime = int(new_digits[-1])
+    new_uptime = parse_get_response(response_new, 118)
+    
+    if new_uptime is not None:
         if new_uptime == 9999:
             print("  [BLAD KRYTYCZNY] Ochrona nie dziala! Parametr read-only nadpisany.")
             sys.exit(1)
@@ -379,16 +401,15 @@ def test_boundary_limits(jlink):
     jlink.rtt_write(0, b'set 18 255\n')
     time.sleep(0.5)
     
-    digits = []
+    clamped_val = None
     for attempt in range(3):
         response = rtt_get_param(jlink, 18, timeout_sec=2.0)
-        digits = re.findall(r'\d+', response.replace('get 18', ''))
-        if digits:
+        clamped_val = parse_get_response(response, 18)
+        if clamped_val is not None:
             break
         time.sleep(0.5)
         
-    if digits:
-        clamped_val = int(digits[-1])
+    if clamped_val is not None:
         if clamped_val == 255:
             print("  [OSTRZEZENIE] Brak logiki MIN/MAX w menu_st dla tego parametru! Zapisano 255.")
         else:
@@ -415,23 +436,23 @@ def test_eeprom_crash_safe(jlink):
     time.sleep(3.0)
     drain_rtt(jlink, 4096)
 
-    digits = []
+    read_val = None
     for attempt in range(8):
         print("  [Odczyt po restarcie - próba {}/8]".format(attempt + 1))
         response = rtt_get_param(jlink, test_id, timeout_sec=3.0)
-        digits = re.findall(r'\d+', response.replace('get {}'.format(test_id), ''))
-        if digits:
+        read_val = parse_get_response(response, test_id)
+        if read_val is not None:
             break
         time.sleep(1.5)
     
     jlink.rtt_write(0, 'set {} 1\n'.format(test_id).encode('utf-8'))
     time.sleep(0.5)
 
-    if digits and int(digits[-1]) == test_val:
+    if read_val == test_val:
         print("  [OK] Dane we Flash (EEPROM) sa bezpieczne, przetrwaly nagly reset!")
     else:
-        val_read = digits[-1] if digits else "Brak odpowiedzi (CLI nie gotowe)"
-        print("  [BLAD KRYTYCZNY] Utrata danych po restarcie! Skrypt odczytal: {}".format(val_read))
+        print("  [BLAD KRYTYCZNY] Utrata danych po restarcie! Skrypt odczytal: {}".format(
+            read_val if read_val is not None else "Brak odpowiedzi (CLI nie gotowe)"))
         sys.exit(1)
 
 def setup_gate_hardware(jlink, gate_type):
