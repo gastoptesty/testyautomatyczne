@@ -170,24 +170,25 @@ def get_counters(jlink, timeout_sec=1.0):
 
 def parse_get_response(resp, idx):
     """
-    Kuloodporny parser, który wycina echo komendy z bufora i pobiera CYFRY
-    Tylko i wyłączenie z pierwszej dostępnej linijki odpowiedzi sprzętowej,
-    ignorując wszystkie inne logi pojawiające się z tła.
+    Kuloodporny parser, wycina logi tła oraz ignoruje limity zmiennych w nawiasach np. [0..20]
     """
-    # 1. Usuwamy ewentualne echo komendy GET wysłanej z konsoli
     clean = re.sub(r'(?i).*?get\s+{}\s*[\r\n]+'.format(idx), '', resp)
-    
-    # Rozbijamy na linie
     lines = [l.strip() for l in clean.split('\n') if l.strip()]
     
     for line in lines:
-        # Pomiń losowe logi tła
         if 'manager' in line.lower() or 'alarm' in line.lower() or 'set' in line.lower():
             continue
-        
-        digits = re.findall(r'\d+', line)
+            
+        # Priorytet 1: Szukamy liczby zaraz po "=" lub ":"
+        # Obsłuży to format np: "28 [slave] Max Torque = 14 [0..20]"
+        match = re.search(r'[=:]\s*(-?\d+)', line)
+        if match:
+            return int(match.group(1))
+            
+        # Priorytet 2: Wycinka wszelkich nawiasów kwadratowych i okrągłych
+        clean_line = re.sub(r'\[.*?\]|\(.*?\)', '', line)
+        digits = re.findall(r'-?\d+', clean_line)
         if digits:
-            # Używamy -1 na wypadek gdy odpowiedź brzmi: "28: 14" -> [28, 14] -> 14
             return int(digits[-1])
             
     return None
@@ -205,7 +206,6 @@ def rtt_get_param(jlink, idx, timeout_sec=1.5):
         chunk = jlink.rtt_read(0, 1024)
         if chunk:
             rtt += "".join([chr(c) for c in chunk])
-            # Skracamy czas czekania, jeśli odebraliśmy już echo i odpowiedź
             if rtt.replace('\r', '').count('\n') >= 2:
                 break
         time.sleep(0.02)
@@ -458,10 +458,6 @@ def test_eeprom_crash_safe(jlink):
 def setup_gate_hardware(jlink, gate_type):
     """
     Konfiguruje sprzet zaleznie od typu bramki.
-    SG: Szybkie bramki rozsuwane - Hamulec aktywny, Rygle wylaczone, Zbijak wylaczony
-    GT: Bramki obrotowe/Tripody - Hamulec wylaczony, Rygle aktywne, Zbijak (rotacja) aktywny
-    SK: Bramki wahadlowe - Hamulec aktywny, Rygle wylaczone, Zbijak wylaczony
-    BR: Bramka reczna/Barierka - Hamulec wylaczony, Rygle aktywne, Zbijak wylaczony
     """
     print("\n[SETUP] Konfiguracja sprzetowa dla bramki: {}...".format(gate_type))
 
@@ -632,128 +628,23 @@ def generate_100_scenarios():
     seq_lp = [LEFT_SENSOR, LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR]
     seq_pl = [RIGHT_SENSOR, RIGHT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR]
 
-    # 1. TESTY KIERUNKOWE (KONTROLA DOSTĘPU)
-    scenarios.append({
-        "name": "KONTROLA: Otwarcie w LEWO (Prawidlowe przejscie L->P)",
-        "mode": "KONTROLA_LEWE_PRAWA",
-        "permit": "L",
-        "seq": seq_lp,
-        "log": LOG_GATE_CLOSED,
-        "count": True
-    })
+    scenarios.append({"name": "KONTROLA: Otwarcie w LEWO", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": seq_lp, "log": LOG_GATE_CLOSED, "count": True})
+    scenarios.append({"name": "KONTROLA: Otwarcie w PRAWO", "mode": "KONTROLA_LEWE_PRAWA", "permit": "R", "seq": seq_pl, "log": LOG_GATE_CLOSED, "count": True})
+    scenarios.append({"name": "BLOKADA: Proba wejscia z lewej", "mode": "BLOKADA_LEWE_PRAWA", "permit": "L", "seq": [LEFT_SENSOR], "log": LOG_ALARM_NO_PERMIT, "count": False})
+    scenarios.append({"name": "KONTROLA ZLY KIERUNEK", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [RIGHT_SENSOR, RIGHT_SECURITY_SENSOR], "log": LOG_ALARM_INTRUSION, "count": False})
+    scenarios.append({"name": "TIMEOUT: Nadano uprawnienie L", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [], "log": LOG_GATE_CLOSED, "count": False, "wait_time": 10})
+    scenarios.append({"name": "WYCOFANIE: Uzytkownik wszedl i zrezygnowal", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR], "log": LOG_GATE_CLOSED, "count": False})
+    scenarios.append({"name": "ALARM PPOZ: Awaryjne otwarcie", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "ppoz 1\n", "seq": seq_lp, "log": "", "count": False, "custom_restore": "ppoz 0\n"})
+    scenarios.append({"name": "USTERKA SENSORA CENTER", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "sensor 5 1\n", "seq": [], "log": LOG_ALARM_SAFETY, "count": False, "custom_restore": "sensor 5 0\n"})
+    scenarios.append({"name": "TAILGATING", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR], "log": LOG_ALARM_TAILGATING, "count": True})
+    scenarios.append({"name": "INTRUSION w srodek bramki", "mode": "WOLNE_LEWE_PRAWA", "seq": [CENTER_SECURITY_SENSOR], "log": LOG_ALARM_INTRUSION, "count": False})
+    scenarios.append({"name": "ANTI-CRUSH", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR], "interrupt": {"after_index": 0, "sensor": CENTER_SECURITY_SENSOR}, "log": LOG_ALARM_SAFETY, "count": False})
 
-    scenarios.append({
-        "name": "KONTROLA: Otwarcie w PRAWO (Prawidlowe przejscie P->L)",
-        "mode": "KONTROLA_LEWE_PRAWA",
-        "permit": "R",
-        "seq": seq_pl,
-        "log": LOG_GATE_CLOSED,
-        "count": True
-    })
-
-    # 2. TESTY BLOKADY I NIEAUTORYZOWANEGO DOSTĘPU
-    scenarios.append({
-        "name": "BLOKADA: Proba wejscia z lewej przy calkowitym zamknieciu",
-        "mode": "BLOKADA_LEWE_PRAWA",
-        "permit": "L", 
-        "seq": [LEFT_SENSOR],
-        "log": LOG_ALARM_NO_PERMIT, 
-        "count": False
-    })
-    
-    scenarios.append({
-        "name": "KONTROLA ZLY KIERUNEK: Uprawnienie L, wejscie fizyczne z P",
-        "mode": "KONTROLA_LEWE_PRAWA",
-        "permit": "L",
-        "seq": [RIGHT_SENSOR, RIGHT_SECURITY_SENSOR],
-        "log": LOG_ALARM_INTRUSION, 
-        "count": False
-    })
-
-    # 3. TESTY TIMEOUTU / SYGNAŁÓW ZWROTNYCH (BRAK AKCJI)
-    scenarios.append({
-        "name": "TIMEOUT: Nadano uprawnienie L, ale uzytkownik nie wszedl",
-        "mode": "KONTROLA_LEWE_PRAWA",
-        "permit": "L",
-        "seq": [], 
-        "log": LOG_GATE_CLOSED, 
-        "count": False,
-        "wait_time": 10 
-    })
-
-    scenarios.append({
-        "name": "WYCOFANIE: Uzytkownik wszedl i zrezygnowal",
-        "mode": "WOLNE_LEWE_PRAWA",
-        "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR],
-        "log": LOG_GATE_CLOSED, 
-        "count": False
-    })
-
-    # 4. TESTY PPOŻ (EWAKUACJA) ORAZ SYSTEMÓW KRYTYCZNYCH
-    scenarios.append({
-        "name": "ALARM PPOZ: Awaryjne otwarcie i ewakuacja",
-        "mode": "WOLNE_LEWE_PRAWA",
-        "custom_trigger": "ppoz 1\n", 
-        "seq": seq_lp,
-        "log": "", 
-        "count": False,
-        "custom_restore": "ppoz 0\n" 
-    })
-
-    scenarios.append({
-        "name": "USTERKA SENSORA: Symulacja zaklejenia czujnika CENTER",
-        "mode": "WOLNE_LEWE_PRAWA",
-        "custom_trigger": "sensor 5 1\n",
-        "seq": [],
-        "log": LOG_ALARM_SAFETY, 
-        "count": False,
-        "custom_restore": "sensor 5 0\n"
-    })
-
-    # 5. TESTY MANIPULACJI (TAILGATING / INTRUSION)
-    scenarios.append({
-        "name": "TAILGATING: Proba przejscia dwoch osob na jedno odbicie (L->P)",
-        "mode": "KONTROLA_LEWE_PRAWA",
-        "permit": "L",
-        "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR],
-        "log": LOG_ALARM_TAILGATING, 
-        "count": True 
-    })
-
-    scenarios.append({
-        "name": "INTRUSION: Wtargniecie bezposrednio w srodek bramki",
-        "mode": "WOLNE_LEWE_PRAWA", 
-        "seq": [CENTER_SECURITY_SENSOR],
-        "log": LOG_ALARM_INTRUSION, 
-        "count": False
-    })
-
-    scenarios.append({
-        "name": "ANTI-CRUSH: Naruszenie przeciwnej strefy przy zamykaniu",
-        "mode": "WOLNE_LEWE_PRAWA",
-        "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR],
-        "interrupt": {"after_index": 0, "sensor": CENTER_SECURITY_SENSOR},
-        "log": LOG_ALARM_SAFETY, 
-        "count": False
-    })
-
-    # 6. WYPEŁNIENIE DO 100 TESTÓW (WOLNE PRZEJŚCIA Z ZACHWIANIAMI)
     for i in range(15):
-        seq_lp_wah = ([LEFT_SENSOR] * ((i % 2) + 1)
-                  + [LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR])
-        scenarios.append({
-            "name": "WOLNE L->P (Wahanie przy wejsciu {}x)".format(i % 2 + 1),
-            "mode": "WOLNE_LEWE_PRAWA", "seq": seq_lp_wah,
-            "log": LOG_GATE_CLOSED, "count": True
-        })
-        
-        seq_pl_wah = ([RIGHT_SENSOR] * ((i % 2) + 1)
-                  + [RIGHT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR])
-        scenarios.append({
-            "name": "WOLNE P->L (Wahanie przy wejsciu {}x)".format(i % 2 + 1),
-            "mode": "WOLNE_LEWE_PRAWA", "seq": seq_pl_wah,
-            "log": LOG_GATE_CLOSED, "count": True
-        })
+        seq_lp_wah = ([LEFT_SENSOR] * ((i % 2) + 1) + [LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR])
+        scenarios.append({"name": "WOLNE L->P (Wahanie przy wejsciu {}x)".format(i % 2 + 1), "mode": "WOLNE_LEWE_PRAWA", "seq": seq_lp_wah, "log": LOG_GATE_CLOSED, "count": True})
+        seq_pl_wah = ([RIGHT_SENSOR] * ((i % 2) + 1) + [RIGHT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR])
+        scenarios.append({"name": "WOLNE P->L (Wahanie przy wejsciu {}x)".format(i % 2 + 1), "mode": "WOLNE_LEWE_PRAWA", "seq": seq_pl_wah, "log": LOG_GATE_CLOSED, "count": True})
 
     return scenarios
 
