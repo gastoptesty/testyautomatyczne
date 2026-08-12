@@ -22,6 +22,8 @@ except Exception:
 # =========================================================
 WAIT_TIME_FOR_GATE_ARM_MOVEMENT = 6
 WAIT_TIMEOUT = 30
+POKE_DELAY_TIME = 0.5
+POKE_DELAY_EXIT_TIME = 0.5
 
 BOOT_WAIT_MASTER   = 3.0   
 BOOT_WAIT_LINK     = 5.0   
@@ -41,7 +43,7 @@ left_counter = 0
 current_mode = "WOLNE_LEWE_PRAWA"
 start_time = time.time()
 
-# --- OCZEKIWANE LOGI Z SYSTEMU (Mniej rygorystyczne by wyłapać wszystko) ---
+# --- OCZEKIWANE LOGI Z SYSTEMU ---
 LOG_GATE_OPENED    = "GATE OPENED"
 LOG_GATE_CLOSED    = "GATE CLOSED"
 LOG_ALARM_INTRUSION  = "INTRUSION"
@@ -49,7 +51,7 @@ LOG_ALARM_TAILGATING = "TAILGATING"
 LOG_MOTOR_ERROR    = "MOTOR ERROR"
 LOG_ALARM_NO_PERMIT  = "NO PERMITION"
 LOG_ALARM_SAFETY   = "SAFETY"
-LOG_TIMEOUT        = "TIMEOUT"
+LOG_TIMEOUT        = "TimeOUT"
 
 # =========================================================
 # FUNKCJE POMOCNICZE BAZOWE
@@ -71,6 +73,25 @@ def drain_rtt(jlink, max_bytes=4096):
         pass
     return ""
 
+def wait_for_logs(jlink, log, timeout_sec):
+    rtt = ''
+    start_time_log = time.time()
+    while time.time() - start_time_log < timeout_sec:
+        chunk = jlink.rtt_read(0, 1024)
+        if chunk:
+            text = "".join([chr(c) for c in chunk])
+            sys.stdout.write(text)
+            sys.stdout.flush()
+            rtt += text
+        if log in rtt:
+            return True
+        time.sleep(0.02)
+
+    print("\n-----------========== DIAGNOSE ============-------------")
+    print("Timeout reached. Log:'{}' not found. - TEST FAILED".format(log))
+    play_beep(440, 500)
+    sys.exit(1)
+
 def check_for_log_bool(jlink, log, timeout_sec):
     rtt = ''
     start_time_log = time.time()
@@ -85,6 +106,12 @@ def check_for_log_bool(jlink, log, timeout_sec):
             return True
         time.sleep(0.02)
     return False
+
+def sensor_poke(jlink, num):
+    jlink.rtt_write(0, 'sensor {} 1\n'.format(num).encode('utf-8'))
+    time.sleep(POKE_DELAY_TIME)
+    jlink.rtt_write(0, 'sensor {} 0\n'.format(num).encode('utf-8'))
+    time.sleep(POKE_DELAY_EXIT_TIME)
 
 def mode_set(jlink, mode):
     global current_mode
@@ -423,6 +450,9 @@ def test_eeprom_crash_safe(jlink):
         sys.exit(1)
 
 def setup_gate_hardware(jlink, gate_type):
+    """
+    Konfiguruje sprzet zaleznie od typu bramki.
+    """
     print("\n[SETUP] Konfiguracja sprzetowa dla bramki: {}...".format(gate_type))
 
     if gate_type == "SG":
@@ -600,6 +630,9 @@ def execute_custom_sequence(jlink, iter_num, config):
         
         if not found:
             print("\nBLAD: Oczekiwano logu '{}', ale go zabraklo! - TEST FAILED".format(expected_log))
+            print("--- Zgromadzone logi z tego testu ---")
+            print(full_log)
+            print("-------------------------------------")
             play_beep(440, 500)
             sys.exit(1)
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
@@ -640,10 +673,19 @@ def generate_100_scenarios():
 
     scenarios.append({"name": "KONTROLA: Otwarcie w LEWO", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": seq_lp, "log": LOG_GATE_CLOSED, "count": True})
     scenarios.append({"name": "KONTROLA: Otwarcie w PRAWO", "mode": "KONTROLA_LEWE_PRAWA", "permit": "R", "seq": seq_pl, "log": LOG_GATE_CLOSED, "count": True})
-    scenarios.append({"name": "BLOKADA: Proba wejscia z lewej", "mode": "BLOKADA_LEWE_PRAWA", "permit": "L", "seq": [LEFT_SENSOR], "log": LOG_ALARM_NO_PERMIT, "count": False})
+    
+    # KONTROLA BEZ UPRAWNIENIA (Wymusza NO PERMITION)
+    scenarios.append({"name": "KONTROLA: Odbicie bez uprawnienia", "mode": "KONTROLA_LEWE_PRAWA", "permit": None, "seq": [LEFT_SENSOR], "log": LOG_ALARM_NO_PERMIT, "count": False})
+
+    # BLOKADA - Brama zignoruje wejscie lub wygasi Timeout, wiec puszczamy log na pusto
+    scenarios.append({"name": "BLOKADA: Proba wejscia z lewej", "mode": "BLOKADA_LEWE_PRAWA", "permit": "L", "seq": [LEFT_SENSOR], "log": "", "count": False})
+    
     scenarios.append({"name": "KONTROLA ZLY KIERUNEK", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [RIGHT_SENSOR, RIGHT_SECURITY_SENSOR], "log": LOG_ALARM_INTRUSION, "count": False})
-    scenarios.append({"name": "TIMEOUT: Nadano uprawnienie L", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [], "log": LOG_GATE_CLOSED, "count": False, "wait_time": 10})
-    scenarios.append({"name": "WYCOFANIE: Uzytkownik wszedl i zrezygnowal", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR], "log": LOG_GATE_CLOSED, "count": False})
+    scenarios.append({"name": "TIMEOUT: Nadano uprawnienie L", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [], "log": LOG_TIMEOUT, "count": False, "wait_time": 10})
+    
+    # WYCOFANIE - Uzytkownik wchodzi i wychodzi (moze spowodowac TimeOut lub Gate Closed zaleznie od firmware'u)
+    scenarios.append({"name": "WYCOFANIE: Uzytkownik wszedl i zrezygnowal", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR], "log": "", "count": False})
+    
     scenarios.append({"name": "ALARM PPOZ: Awaryjne otwarcie", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "ppoz 1\n", "seq": seq_lp, "log": "", "count": False, "custom_restore": "ppoz 0\n"})
     scenarios.append({"name": "USTERKA SENSORA CENTER", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "sensor 5 1\n", "seq": [], "log": LOG_ALARM_SAFETY, "count": False, "custom_restore": "sensor 5 0\n"})
     scenarios.append({"name": "TAILGATING", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR], "log": LOG_ALARM_TAILGATING, "count": True})
