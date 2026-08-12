@@ -34,7 +34,7 @@ PARAM_ALL = {
     22: 100, # Break Open (50-250)
     23: 100, # Break Close (50-250)
     28: 14,  # Max Torque (0-20) - docelowo i tak nadpisywane optymalizatorem
-    40: 2    # Sensor Sensitive (2 = Ignoruje fizyczne dolne czujniki!)
+    40: 2    # Sensor Sensitive (2 = Ignoruje fizyczne dolne czujniki w automatach!)
 }
 
 # Parametry specyficzne dla konkretnych bramek
@@ -361,11 +361,18 @@ def run_sensor_diagnostics(jlink, gate_type):
     print("\n" + "="*60)
     print(" 🛠️  URUCHOMIONO TRYB: DIAGNOSTYKA FIZYCZNA CZUJNIKÓW")
     print("="*60)
+    
+    print("\n[INFO] Wymuszanie czułości czujników na 0 (aktywacja dolnej i górnej linii optyki)...")
+    rtt_set_and_verify(jlink, 40, 0, is_remote=True)
+    print("  [OK] Czekam na zapis we Flash...")
+    time.sleep(2.0)
+    safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
+
     if "SG" in gate_type:
-        print(" -> Profil: Szybkie Bramki Rozsuwane (SG)")
+        print("\n -> Profil: Szybkie Bramki Rozsuwane (SG)")
         print(" -> Spodziewane czujniki: 0, 1, 3, 5, 8, 10, 13")
     else:
-        print(" -> Profil: Bramki Obrotowe/Wahadłowe (GT/SK)")
+        print("\n -> Profil: Bramki Obrotowe/Wahadłowe (GT/SK)")
         print(" -> Spodziewane czujniki: 0, 3, 5, 8, 13")
 
     print("\n[INSTRUKCJA] Zasłaniaj fizycznie kolejne czujniki w bramce.")
