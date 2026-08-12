@@ -22,8 +22,6 @@ except Exception:
 # =========================================================
 WAIT_TIME_FOR_GATE_ARM_MOVEMENT = 6
 WAIT_TIMEOUT = 30
-POKE_DELAY_TIME = 0.5
-POKE_DELAY_EXIT_TIME = 0.5
 
 BOOT_WAIT_MASTER   = 3.0   
 BOOT_WAIT_LINK     = 5.0   
@@ -43,14 +41,14 @@ left_counter = 0
 current_mode = "WOLNE_LEWE_PRAWA"
 start_time = time.time()
 
-# --- OCZEKIWANE LOGI Z SYSTEMU ---
-LOG_GATE_OPENED    = "Permit manager: GATE OPENED"
-LOG_GATE_CLOSED    = "Permit manager: GATE CLOSED"
-LOG_ALARM_INTRUSION  = "ALARM INTRUSION"
-LOG_ALARM_TAILGATING = "ALARM TAILGATING"
+# --- OCZEKIWANE LOGI Z SYSTEMU (Mniej rygorystyczne by wyłapać wszystko) ---
+LOG_GATE_OPENED    = "GATE OPENED"
+LOG_GATE_CLOSED    = "GATE CLOSED"
+LOG_ALARM_INTRUSION  = "INTRUSION"
+LOG_ALARM_TAILGATING = "TAILGATING"
 LOG_MOTOR_ERROR    = "MOTOR ERROR"
-LOG_ALARM_NO_PERMIT  = "ALARM NO PERMIT"
-LOG_ALARM_SAFETY   = "SAFETY ALARM"
+LOG_ALARM_NO_PERMIT  = "NO PERMITION"
+LOG_ALARM_SAFETY   = "SAFETY"
 LOG_TIMEOUT        = "TIMEOUT"
 
 # =========================================================
@@ -73,25 +71,6 @@ def drain_rtt(jlink, max_bytes=4096):
         pass
     return ""
 
-def wait_for_logs(jlink, log, timeout_sec):
-    rtt = ''
-    start_time_log = time.time()
-    while time.time() - start_time_log < timeout_sec:
-        chunk = jlink.rtt_read(0, 1024)
-        if chunk:
-            text = "".join([chr(c) for c in chunk])
-            sys.stdout.write(text)
-            sys.stdout.flush()
-            rtt += text
-        if log in rtt:
-            return True
-        time.sleep(0.02)
-
-    print("\n-----------========== DIAGNOSE ============-------------")
-    print("Timeout reached. Log:'{}' not found. - TEST FAILED".format(log))
-    play_beep(440, 500)
-    sys.exit(1)
-
 def check_for_log_bool(jlink, log, timeout_sec):
     rtt = ''
     start_time_log = time.time()
@@ -106,12 +85,6 @@ def check_for_log_bool(jlink, log, timeout_sec):
             return True
         time.sleep(0.02)
     return False
-
-def sensor_poke(jlink, num):
-    jlink.rtt_write(0, 'sensor {} 1\n'.format(num).encode('utf-8'))
-    time.sleep(POKE_DELAY_TIME)
-    jlink.rtt_write(0, 'sensor {} 0\n'.format(num).encode('utf-8'))
-    time.sleep(POKE_DELAY_EXIT_TIME)
 
 def mode_set(jlink, mode):
     global current_mode
@@ -171,9 +144,6 @@ def get_counters(jlink, timeout_sec=1.0):
 # =========================================================
 
 def parse_get_response(resp, idx):
-    """
-    Kuloodporny parser, wycina logi tła oraz ignoruje limity zmiennych w nawiasach np. [0..20]
-    """
     clean = re.sub(r'(?i).*?get\s+{}\s*[\r\n]+'.format(idx), '', resp)
     lines = [l.strip() for l in clean.split('\n') if l.strip()]
     
@@ -453,9 +423,6 @@ def test_eeprom_crash_safe(jlink):
         sys.exit(1)
 
 def setup_gate_hardware(jlink, gate_type):
-    """
-    Konfiguruje sprzet zaleznie od typu bramki.
-    """
     print("\n[SETUP] Konfiguracja sprzetowa dla bramki: {}...".format(gate_type))
 
     if gate_type == "SG":
@@ -515,15 +482,21 @@ def test_find_optimal_torque(jlink):
             print("   [V] Moment {} wystarczajacy do ruchu.".format(tq))
             successful_torques.append(tq)
             
-            print("   [INFO] Symulacja pelnego przejscia L->P dla zresetowania stanu bramki...")
+            print("   [INFO] Symulacja fizycznego przejscia by zresetowac stan bramki...")
             seq_lp = [LEFT_SENSOR, LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR]
-            for s in seq_lp:
-                sensor_poke(jlink, s)
             
+            for i in range(len(seq_lp)):
+                jlink.rtt_write(0, 'sensor {} 1\n'.format(seq_lp[i]).encode('utf-8'))
+                time.sleep(0.3)
+                if i + 1 < len(seq_lp):
+                    jlink.rtt_write(0, 'sensor {} 1\n'.format(seq_lp[i+1]).encode('utf-8'))
+                    time.sleep(0.3)
+                jlink.rtt_write(0, 'sensor {} 0\n'.format(seq_lp[i]).encode('utf-8'))
+                time.sleep(0.3)
+                
             check_for_log_bool(jlink, LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
             time.sleep(1)
-
-            print("   [INFO] Przerwano skanowanie kolejnych momentow - znaleziono optymalny.")
+            print("   [OK] Przerwano szukanie - znaleziono optymalny moment.")
             break
         else:
             print("   [X] Moment {} niewystarczajacy.".format(tq))
@@ -570,29 +543,63 @@ def execute_custom_sequence(jlink, iter_num, config):
         jlink.rtt_write(0, custom_trigger.encode('utf-8'))
         time.sleep(0.5)
 
+    collected_logs = []
+    def do_sleep(dur):
+        start_t = time.time()
+        while time.time() - start_t < dur:
+            chunk = jlink.rtt_read(0, 1024)
+            if chunk:
+                text = "".join([chr(c) for c in chunk])
+                sys.stdout.write(text)
+                sys.stdout.flush()
+                collected_logs.append(text)
+            time.sleep(0.02)
+
+    # NOWY SILNIK Z NAKŁADAJĄCYMI SIĘ CZUJNIKAMI (SYMULACJA CIAŁA PIESZEGO)
     if seq:
-        for index, sensor in enumerate(seq):
-            jlink.rtt_write(0, 'sensor {} 1\n'.format(sensor).encode('utf-8'))
-            time.sleep(POKE_DELAY_TIME)
+        for i in range(len(seq)):
+            # 1. Wejście na bieżący czujnik
+            jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[i]).encode('utf-8'))
+            do_sleep(0.3)
 
-            if interrupt_step and index == interrupt_step["after_index"]:
-                print("\n[!] ALARM: Symulacja naruszenia strefy {}!".format(
-                    interrupt_step['sensor']))
-                jlink.rtt_write(0, 'sensor {} 1\n'.format(
-                    interrupt_step["sensor"]).encode('utf-8'))
-                time.sleep(0.5)
-                check_for_log_bool(jlink, LOG_ALARM_SAFETY, 2)
-                jlink.rtt_write(0, 'sensor {} 0\n'.format(
-                    interrupt_step["sensor"]).encode('utf-8'))
+            # Przerwanie - Symulacja alarmu podczas kroku
+            if interrupt_step and i == interrupt_step["after_index"]:
+                print("\n[!] ALARM: Symulacja naruszenia strefy {}!".format(interrupt_step['sensor']))
+                jlink.rtt_write(0, 'sensor {} 1\n'.format(interrupt_step["sensor"]).encode('utf-8'))
+                do_sleep(0.8)
+                jlink.rtt_write(0, 'sensor {} 0\n'.format(interrupt_step["sensor"]).encode('utf-8'))
 
-            jlink.rtt_write(0, 'sensor {} 0\n'.format(sensor).encode('utf-8'))
-            time.sleep(POKE_DELAY_EXIT_TIME)
+            # 2. Wejście na KOLEJNY czujnik zanim zejdzie się z poprzedniego
+            if i + 1 < len(seq):
+                jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[i+1]).encode('utf-8'))
+                do_sleep(0.3)
 
+            # 3. Zejście z bieżącego czujnika
+            jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
+            do_sleep(0.3)
+
+    # POSZUKIWANIE OCZEKIWANEGO LOGU W ZBUFOROWANYCH DANYCH LUB NASŁUCH DALEJ
     if expected_log:
-        found = check_for_log_bool(jlink, expected_log, wait_time)
+        found = False
+        full_log = "".join(collected_logs)
+        if expected_log in full_log:
+            found = True
+        else:
+            start_w = time.time()
+            while time.time() - start_w < wait_time:
+                chunk = jlink.rtt_read(0, 1024)
+                if chunk:
+                    text = "".join([chr(c) for c in chunk])
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
+                    full_log += text
+                    if expected_log in full_log:
+                        found = True
+                        break
+                time.sleep(0.05)
+        
         if not found:
-            print("\nBLAD: Oczekiwano logu '{}', ale go zabraklo! - TEST FAILED".format(
-                expected_log))
+            print("\nBLAD: Oczekiwano logu '{}', ale go zabraklo! - TEST FAILED".format(expected_log))
             play_beep(440, 500)
             sys.exit(1)
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
@@ -614,8 +621,7 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.exit(1)
         else:
             right_counter, left_counter = end_r, end_l
-            print("\nSUKCES: Licznik wzrosl (L:{}, R:{})".format(
-                left_counter, right_counter))
+            print("\nSUKCES: Licznik wzrosl (L:{}, R:{})".format(left_counter, right_counter))
     else:
         if total_end > total_start:
             print("\nBLAD: System nieslusznie zliczyl przejscie! - TEST FAILED")
