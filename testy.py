@@ -18,46 +18,44 @@ except Exception:
     GATE_TYPE = "SG"
 
 # =========================================================
-# KONFIGURACJA PARAMETRÓW EEPROM (Zgodnie z PDF)
+# KONFIGURACJA PARAMETRÓW EEPROM (Zgodnie ze specyfikacją)
 # =========================================================
 
 # Wspólne parametry (ALL)
 PARAM_ALL = {
-    0: 0,   # Tryb pracy (0 = WOLNE_LEWE_PRAWA)
-    2: 0,   # Licz P.Lewy (Zerowanie licznika do testów)
-    3: 0,   # Licz P.Prawy (Zerowanie licznika do testów)
-    10: 10, # Czas TimeOut (10s)
-    8: 1,   # Ppoz NC/NO
-    12: 0,  # PPoz strona
-    18: 60, # Prędkość
-    19: 20, # Pred.Min
-    21: 10, # Acc Open
-    22: 10, # Acc Close
-    23: 10, # Break Open
-    24: 10, # Break Close
-    28: 14  # Max Torque (Wartość wstępna - i tak zostanie nadpisana skanerem optymalnym)
+    0: 0,    # Tryb pracy (0 = WOLNE_LEWE_PRAWA)
+    10: 10,  # Czas TimeOut (10s)
+    12: 1,   # PPoz NC/NO (0-1)
+    13: 0,   # PPoz strona (0-1)
+    18: 8,   # Prędkość (1-9)
+    19: 20,  # Pred.Min (1-100)
+    20: 10,  # Acc Open (1-20)
+    21: 10,  # Acc Close (1-20)
+    22: 100, # Break Open (50-250)
+    23: 100, # Break Close (50-250)
+    28: 14   # Max Torque (0-20) - docelowo i tak nadpisywane optymalizatorem
 }
 
 # Parametry specyficzne dla konkretnych bramek
 PARAM_SG = {
-    11: 2,  # Close Delay
-    32: 1,  # Hamulec używaj
-    14: 0   # Sensor mode
+    27: 10, # Close Delay (8-20)
+    32: 1,  # Hamulec używaj (0-1)
+    39: 0   # Sensor mode (0-1)
 }
 
 PARAM_GT = {
-    11: 2,  # Close Delay
-    14: 0   # Sensor mode
+    27: 10, # Close Delay
+    39: 0   # Sensor mode
 }
 
 PARAM_SK = {
-    11: 2,  # Close Delay
+    27: 10, # Close Delay
     32: 1,  # Hamulec używaj
-    14: 0   # Sensor mode
+    39: 0   # Sensor mode
 }
 
 PARAM_BR = {
-    20: 50, # Overspeed
+    24: 5,  # Overspeed (0-8)
     32: 0,  # Hamulec używaj
     34: 1,  # Rygiel używaj
     38: 0   # Zbijak obrót
@@ -254,7 +252,6 @@ def rtt_get_param(jlink, idx, timeout_sec=1.5):
     return rtt
 
 def rtt_set_and_verify(jlink, idx, val, is_remote=False):
-    # Zoptymalizowany krótki czas oczekiwania dla szybkiego nakładania konfiguracji
     monitor_window = 1.5 if is_remote else 1.0 
     
     for attempt in range(4):
@@ -284,7 +281,7 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
             return False
 
         jlink.rtt_write(0, b'\n')
-        time.sleep(0.1)
+        time.sleep(0.3) # Dajemy czas MCU na zatwierdzenie zmiennej przed odczytem
         
         resp = rtt_get_param(jlink, idx, 1.0)
         read_val = parse_get_response(resp, idx)
@@ -370,7 +367,6 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
 def apply_and_verify_full_config(jlink, gate_type):
     print("\n[SETUP] Rozpoczynam pelna konfiguracje EEPROM dla bramki: {}...".format(gate_type))
     
-    # Zbudowanie docelowego słownika z parametrami
     target_params = PARAM_ALL.copy()
     if gate_type == "SG":
         target_params.update(PARAM_SG)
@@ -383,7 +379,6 @@ def apply_and_verify_full_config(jlink, gate_type):
     else:
         print("  [WARN] Nieznany typ bramki {}. Wgrywam tylko zestaw podstawowy (ALL).".format(gate_type))
 
-    # Etap 1: Zapis
     for idx, val in target_params.items():
         status = rtt_set_and_verify(jlink, idx, val, is_remote=True)
         if not status:
@@ -393,12 +388,10 @@ def apply_and_verify_full_config(jlink, gate_type):
     print("  [OK] Wszystkie {} parametrow wyslano. Czekam 2s na zatwierdzenie we Flash...".format(len(target_params)))
     time.sleep(2.0)
     
-    # Etap 2: Reset (Test Crash-Safe)
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
     time.sleep(2.0)
     drain_rtt(jlink, 4096)
     
-    # Etap 3: Weryfikacja
     print("\n[WERYFIKACJA] Sprawdzanie trwalosci danych po restarcie (Crash-Safe)...")
     for idx, expected_val in target_params.items():
         read_val = None
