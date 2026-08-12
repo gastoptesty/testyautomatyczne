@@ -18,6 +18,52 @@ except Exception:
     GATE_TYPE = "SG"
 
 # =========================================================
+# KONFIGURACJA PARAMETRÓW EEPROM (Zgodnie z PDF)
+# =========================================================
+
+# Wspólne parametry (ALL)
+PARAM_ALL = {
+    0: 0,   # Tryb pracy (0 = WOLNE_LEWE_PRAWA)
+    2: 0,   # Licz P.Lewy (Zerowanie licznika do testów)
+    3: 0,   # Licz P.Prawy (Zerowanie licznika do testów)
+    10: 10, # Czas TimeOut (10s)
+    8: 1,   # Ppoz NC/NO
+    12: 0,  # PPoz strona
+    18: 60, # Prędkość
+    19: 20, # Pred.Min
+    21: 10, # Acc Open
+    22: 10, # Acc Close
+    23: 10, # Break Open
+    24: 10, # Break Close
+    28: 14  # Max Torque (Wartość wstępna - i tak zostanie nadpisana skanerem optymalnym)
+}
+
+# Parametry specyficzne dla konkretnych bramek
+PARAM_SG = {
+    11: 2,  # Close Delay
+    32: 1,  # Hamulec używaj
+    14: 0   # Sensor mode
+}
+
+PARAM_GT = {
+    11: 2,  # Close Delay
+    14: 0   # Sensor mode
+}
+
+PARAM_SK = {
+    11: 2,  # Close Delay
+    32: 1,  # Hamulec używaj
+    14: 0   # Sensor mode
+}
+
+PARAM_BR = {
+    20: 50, # Overspeed
+    32: 0,  # Hamulec używaj
+    34: 1,  # Rygiel używaj
+    38: 0   # Zbijak obrót
+}
+
+# =========================================================
 # ZMIENNE I STALE SYSTEMOWE
 # =========================================================
 WAIT_TIME_FOR_GATE_ARM_MOVEMENT = 6
@@ -208,12 +254,12 @@ def rtt_get_param(jlink, idx, timeout_sec=1.5):
     return rtt
 
 def rtt_set_and_verify(jlink, idx, val, is_remote=False):
-    monitor_window = 5.0 if is_remote else 3.0
-    collected_logs = ""
-
+    # Zoptymalizowany krótki czas oczekiwania dla szybkiego nakładania konfiguracji
+    monitor_window = 1.5 if is_remote else 1.0 
+    
     for attempt in range(4):
-        print("\n--- [PROBA ZAPISU {}] Ustawianie parametru {} = {} (remote={}) ---".format(
-            attempt + 1, idx, val, is_remote))
+        print("   -> [ZAPIS] ID {} = {} ...".format(idx, val), end="")
+        sys.stdout.flush()
 
         try:
             jlink.rtt_read(0, 4096)
@@ -234,29 +280,25 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
 
         if ("WWDG" in collected_logs or "IWDG" in collected_logs
                 or "HardFault" in collected_logs):
-            print("   [KATASTROFA] Wykryto sprzetowy HardFault lub Watchdog w logach!")
-            return False, collected_logs
+            print(" [KATASTROFA WDG/FAULT]")
+            return False
 
         jlink.rtt_write(0, b'\n')
-        time.sleep(0.2)
-        try:
-            jlink.rtt_read(0, 256)
-        except Exception:
-            pass
-
-        resp = rtt_get_param(jlink, idx, 1.5 if is_remote else 1.0)
+        time.sleep(0.1)
+        
+        resp = rtt_get_param(jlink, idx, 1.0)
         read_val = parse_get_response(resp, idx)
 
         if read_val is not None:
             if read_val == val:
-                print("   [SUKCES] Parametr poprawnie zweryfikowany.")
-                return True, collected_logs
+                print(" [OK]")
+                return True
             else:
-                print("   [SYNC FAIL] Zglasza {}, oczekiwano {}. Ponawiam...".format(read_val, val))
+                print(" [FAIL - Odczytano: {}] ponawiam...".format(read_val))
         else:
-            print("   [SYNC FAIL] Brak jasnej odpowiedzi cyfrowej na GET.")
+            print(" [FAIL - Brak odpowiedzi] ponawiam...")
 
-    return False, collected_logs
+    return False
 
 def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
     if delay is None:
@@ -316,14 +358,66 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
         
         ping_resp = rtt_get_param(jlink, 0, timeout_sec=2.0)
         if parse_get_response(ping_resp, 0) is not None:
-            print("   [BOOT OK] Brama zyje i odpowiada na zapytania RTT. Bezpieczny zapis mozliwy.")
+            print("   [BOOT OK] Brama zyje i odpowiada na zapytania RTT.")
         else:
             print("   [BOOT FATAL] Brama nie odpowiada! Ryzyko WDG lub rozlaczenia J-Link.")
             time.sleep(BOOT_WAIT_LINK)
 
 # =========================================================
-# PRE-FLIGHT CHECKS & DIAGNOSTICS
+# PRE-FLIGHT CHECKS, KONFIGURACJA I DIAGNOSTYKA
 # =========================================================
+
+def apply_and_verify_full_config(jlink, gate_type):
+    print("\n[SETUP] Rozpoczynam pelna konfiguracje EEPROM dla bramki: {}...".format(gate_type))
+    
+    # Zbudowanie docelowego słownika z parametrami
+    target_params = PARAM_ALL.copy()
+    if gate_type == "SG":
+        target_params.update(PARAM_SG)
+    elif gate_type == "GT":
+        target_params.update(PARAM_GT)
+    elif gate_type == "SK":
+        target_params.update(PARAM_SK)
+    elif gate_type == "BR":
+        target_params.update(PARAM_BR)
+    else:
+        print("  [WARN] Nieznany typ bramki {}. Wgrywam tylko zestaw podstawowy (ALL).".format(gate_type))
+
+    # Etap 1: Zapis
+    for idx, val in target_params.items():
+        status = rtt_set_and_verify(jlink, idx, val, is_remote=True)
+        if not status:
+            print("  [BLAD KRYTYCZNY] Nie udalo sie nadpisac zmiennej ID: {}!".format(idx))
+            sys.exit(1)
+            
+    print("  [OK] Wszystkie {} parametrow wyslano. Czekam 2s na zatwierdzenie we Flash...".format(len(target_params)))
+    time.sleep(2.0)
+    
+    # Etap 2: Reset (Test Crash-Safe)
+    safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
+    time.sleep(2.0)
+    drain_rtt(jlink, 4096)
+    
+    # Etap 3: Weryfikacja
+    print("\n[WERYFIKACJA] Sprawdzanie trwalosci danych po restarcie (Crash-Safe)...")
+    for idx, expected_val in target_params.items():
+        read_val = None
+        for attempt in range(4):
+            resp = rtt_get_param(jlink, idx, timeout_sec=2.0)
+            read_val = parse_get_response(resp, idx)
+            if read_val is not None:
+                break
+            time.sleep(0.5)
+            
+        if read_val == expected_val:
+            print("  [OK] Parametr ID {:<2} = {:<3} (przetrwal reset)".format(idx, expected_val))
+        else:
+            print("  [BLAD KRYTYCZNY] Parametr ID {} utracony! Oczekiwano {}, odczytano: {}".format(
+                idx, expected_val, read_val if read_val is not None else "Brak odpowiedzi"))
+            sys.exit(1)
+            
+    print("  [SUKCES] Konfiguracja zapisana trwale w pamieci EEPROM i zweryfikowana!")
+
 def test_calibration_read_only(jlink):
     print("\n[PRE-CHECK] Sprawdzanie bezpieczenstwa kalibracji...")
     drain_rtt(jlink, 4096)
@@ -411,78 +505,12 @@ def test_boundary_limits(jlink):
     else:
         print("  [WARN] Brak odpowiedzi dla limitów prędkości.")
 
-def test_eeprom_crash_safe(jlink):
-    print("\n[PRE-CHECK] Test trwalosci atomowego zapisu EEPROM (Flash)...")
-    test_id = 28  # MAX_TORQUE_SILNIK
-    test_val = 14 
-    
-    status, logs = rtt_set_and_verify(jlink, test_id, test_val, is_remote=True)
-    if not status:
-        print("  [BLAD KRYTYCZNY] Nie udalo sie nadpisac zmiennej (ID: {})! Test przerwany.".format(test_id))
-        sys.exit(1)
-
-    print("  [OK] Zmienna testowa ustawiona. Czekam 2s na zatwierdzenie w pamieci Flash...")
-    time.sleep(2.0)
-
-    print("  [OK] Wymuszam twardy reset...")
-    safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
-    
-    time.sleep(3.0)
-    drain_rtt(jlink, 4096)
-
-    read_val = None
-    for attempt in range(8):
-        print("  [Odczyt po restarcie - próba {}/8]".format(attempt + 1))
-        response = rtt_get_param(jlink, test_id, timeout_sec=3.0)
-        read_val = parse_get_response(response, test_id)
-        if read_val is not None:
-            break
-        time.sleep(1.5)
-    
-    jlink.rtt_write(0, 'set {} 1\n'.format(test_id).encode('utf-8'))
-    time.sleep(0.5)
-
-    if read_val == test_val:
-        print("  [OK] Dane we Flash (EEPROM) sa bezpieczne, przetrwaly nagly reset!")
-    else:
-        print("  [BLAD KRYTYCZNY] Utrata danych po restarcie! Skrypt odczytal: {}".format(
-            read_val if read_val is not None else "Brak odpowiedzi (CLI nie gotowe)"))
-        sys.exit(1)
-
-def setup_gate_hardware(jlink, gate_type):
-    """
-    Konfiguruje sprzet zaleznie od typu bramki.
-    """
-    print("\n[SETUP] Konfiguracja sprzetowa dla bramki: {}...".format(gate_type))
-
-    if gate_type == "SG":
-        rtt_set_and_verify(jlink, 32, 1, is_remote=True)
-        rtt_set_and_verify(jlink, 34, 0, is_remote=True)
-        rtt_set_and_verify(jlink, 38, 0, is_remote=True)
-    elif gate_type == "GT":
-        rtt_set_and_verify(jlink, 32, 0, is_remote=True)
-        rtt_set_and_verify(jlink, 34, 1, is_remote=True)
-        rtt_set_and_verify(jlink, 38, 1, is_remote=True)
-    elif gate_type == "SK":
-        rtt_set_and_verify(jlink, 32, 1, is_remote=True)
-        rtt_set_and_verify(jlink, 34, 0, is_remote=True)
-        rtt_set_and_verify(jlink, 38, 0, is_remote=True)
-    elif gate_type == "BR":
-        rtt_set_and_verify(jlink, 32, 0, is_remote=True)
-        rtt_set_and_verify(jlink, 34, 1, is_remote=True)
-        rtt_set_and_verify(jlink, 38, 0, is_remote=True)
-    else:
-        print("  [WARN] Nieznany typ bramki, pomijam scisla konfiguracje EEPROM.")
-
-    print("   [OK] Konfiguracja peryferiow zapisana. Wykonuje restart...")
-    safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
-
 def test_find_optimal_torque(jlink):
     print("\n[PRE-CHECK] Pelne skanowanie Max Torque (1-20)...")
     successful_torques = []
 
     for tq in range(1, 21):
-        status, logs = rtt_set_and_verify(jlink, 28, tq, is_remote=True)
+        status = rtt_set_and_verify(jlink, 28, tq, is_remote=True)
         if not status:
             continue 
 
@@ -585,30 +613,24 @@ def execute_custom_sequence(jlink, iter_num, config):
                 collected_logs.append(text)
             time.sleep(0.02)
 
-    # NOWY SILNIK Z NAKŁADAJĄCYMI SIĘ CZUJNIKAMI (SYMULACJA CIAŁA PIESZEGO)
     if seq:
         for i in range(len(seq)):
-            # 1. Wejście na bieżący czujnik
             jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[i]).encode('utf-8'))
             do_sleep(0.3)
 
-            # Przerwanie - Symulacja alarmu podczas kroku
             if interrupt_step and i == interrupt_step["after_index"]:
                 print("\n[!] ALARM: Symulacja naruszenia strefy {}!".format(interrupt_step['sensor']))
                 jlink.rtt_write(0, 'sensor {} 1\n'.format(interrupt_step["sensor"]).encode('utf-8'))
                 do_sleep(0.8)
                 jlink.rtt_write(0, 'sensor {} 0\n'.format(interrupt_step["sensor"]).encode('utf-8'))
 
-            # 2. Wejście na KOLEJNY czujnik zanim zejdzie się z poprzedniego
             if i + 1 < len(seq):
                 jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[i+1]).encode('utf-8'))
                 do_sleep(0.3)
 
-            # 3. Zejście z bieżącego czujnika
             jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
             do_sleep(0.3)
 
-    # POSZUKIWANIE OCZEKIWANEGO LOGU W ZBUFOROWANYCH DANYCH LUB NASŁUCH DALEJ
     if expected_log:
         found = False
         full_log = "".join(collected_logs)
@@ -673,19 +695,11 @@ def generate_100_scenarios():
 
     scenarios.append({"name": "KONTROLA: Otwarcie w LEWO", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": seq_lp, "log": LOG_GATE_CLOSED, "count": True})
     scenarios.append({"name": "KONTROLA: Otwarcie w PRAWO", "mode": "KONTROLA_LEWE_PRAWA", "permit": "R", "seq": seq_pl, "log": LOG_GATE_CLOSED, "count": True})
-    
-    # KONTROLA BEZ UPRAWNIENIA (Wymusza NO PERMITION)
     scenarios.append({"name": "KONTROLA: Odbicie bez uprawnienia", "mode": "KONTROLA_LEWE_PRAWA", "permit": None, "seq": [LEFT_SENSOR], "log": LOG_ALARM_NO_PERMIT, "count": False})
-
-    # BLOKADA - Brama zignoruje wejscie lub wygasi Timeout, wiec puszczamy log na pusto
     scenarios.append({"name": "BLOKADA: Proba wejscia z lewej", "mode": "BLOKADA_LEWE_PRAWA", "permit": "L", "seq": [LEFT_SENSOR], "log": "", "count": False})
-    
     scenarios.append({"name": "KONTROLA ZLY KIERUNEK", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [RIGHT_SENSOR, RIGHT_SECURITY_SENSOR], "log": LOG_ALARM_INTRUSION, "count": False})
     scenarios.append({"name": "TIMEOUT: Nadano uprawnienie L", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [], "log": LOG_TIMEOUT, "count": False, "wait_time": 10})
-    
-    # WYCOFANIE - Uzytkownik wchodzi i wychodzi (moze spowodowac TimeOut lub Gate Closed zaleznie od firmware'u)
     scenarios.append({"name": "WYCOFANIE: Uzytkownik wszedl i zrezygnowal", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR], "log": "", "count": False})
-    
     scenarios.append({"name": "ALARM PPOZ: Awaryjne otwarcie", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "ppoz 1\n", "seq": seq_lp, "log": "", "count": False, "custom_restore": "ppoz 0\n"})
     scenarios.append({"name": "USTERKA SENSORA CENTER", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "sensor 5 1\n", "seq": [], "log": LOG_ALARM_SAFETY, "count": False, "custom_restore": "sensor 5 0\n"})
     scenarios.append({"name": "TAILGATING", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR], "log": LOG_ALARM_TAILGATING, "count": True})
@@ -752,12 +766,11 @@ def main():
         test_calibration_read_only(jlink)
         test_diagnostic_readonly(jlink)
         test_boundary_limits(jlink)
-        test_eeprom_crash_safe(jlink)
 
-        # Inicjalizacja peryferiow zaleznie od parametru SG/GT/SK/BR
-        setup_gate_hardware(jlink, GATE_TYPE)
+        # Instalowanie dedykowanego zestawu parametrów (ALL + Specyficzne)
+        apply_and_verify_full_config(jlink, GATE_TYPE)
 
-        # Test momentu obrotowego odpalamy zawsze, by zweryfikowac zachowanie (np. opuszczanie rygla w GT/BR)
+        # Skalowanie obciążenia
         test_find_optimal_torque(jlink)
 
         # >>>>>>>>>>>>> SETUP PRZED GLOWNA PETLA >>>>>>>>>>>>>
