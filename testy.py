@@ -34,7 +34,7 @@ PARAM_ALL = {
     22: 100, # Break Open (50-250)
     23: 100, # Break Close (50-250)
     28: 14,  # Max Torque (0-20) - docelowo i tak nadpisywane optymalizatorem
-    40: 2    # Sensor Sensitive (2 = Wylaczenie dolnych czujnikow i uzywanie tylko gornych)
+    40: 2    # Sensor Sensitive (2 = Ignoruje fizyczne dolne czujniki!)
 }
 
 # Parametry specyficzne dla konkretnych bramek
@@ -75,12 +75,14 @@ BOOT_WAIT_LINK     = 5.0
 LOG_SYSTEM_READY   = "Permit manager"   
 SYSTEM_READY_TIMEOUT = 12.0             
 
-# NOWE MAPOWANIE SENSOROW (Tylko górna linia)
-LEFT_SENSOR = 1
-LEFT_SECURITY_SENSOR = 4
-CENTER_SECURITY_SENSOR = 7
-RIGHT_SECURITY_SENSOR = 9
-RIGHT_SENSOR = 14
+# STARE, POPRAWNE LOGICZNIE MAPOWANIE SENSOROW (Oczekiwane przez Permit Manager)
+RIGHT_SENSOR = 13
+RIGHT_DOWN_SENSOR = 10
+LEFT_SENSOR = 0
+LEFT_DOWN_SENSOR = 1
+RIGHT_SECURITY_SENSOR = 8
+LEFT_SECURITY_SENSOR = 3
+CENTER_SECURITY_SENSOR = 5
 
 right_counter = 0
 left_counter = 0
@@ -258,42 +260,34 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
         print("   -> [ZAPIS] ID {} = {} ...".format(idx, val), end="")
         sys.stdout.flush()
 
-        try:
-            jlink.rtt_read(0, 4096)
-        except Exception:
-            pass
-
+        drain_rtt(jlink, 4096)
+        
         jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
 
-        collected_logs = ""
-        start_monitor = time.time()
+        # Dłuższy oddech dla zdalnych (EE remote), żeby Master zdążył pchnąć dane po UART
+        time.sleep(0.4 if is_remote else 0.2)
 
-        while time.time() - start_monitor < monitor_window:
-            chunk = jlink.rtt_read(0, 1024)
-            if chunk:
-                text = "".join([chr(c) for c in chunk])
-                collected_logs += text
-            time.sleep(0.01)
+        collected_logs = drain_rtt(jlink, 4096)
 
         if ("WWDG" in collected_logs or "IWDG" in collected_logs
                 or "HardFault" in collected_logs):
             print(" [KATASTROFA WDG/FAULT]")
             return False
 
-        jlink.rtt_write(0, b'\n')
-        time.sleep(0.3) 
-        
-        resp = rtt_get_param(jlink, idx, 1.0)
+        resp = rtt_get_param(jlink, idx, 1.5)
         read_val = parse_get_response(resp, idx)
 
         if read_val is not None:
             if read_val == val:
                 print(" [OK]")
+                time.sleep(0.2) # Chwila przerwy dla EEPROM przed kolejną zmienną
                 return True
             else:
                 print(" [FAIL - Odczytano: {}] ponawiam...".format(read_val))
         else:
             print(" [FAIL - Brak odpowiedzi] ponawiam...")
+            
+        time.sleep(0.5)
 
     return False
 
@@ -380,13 +374,16 @@ def apply_and_verify_full_config(jlink, gate_type):
         print("  [WARN] Nieznany typ bramki {}. Wgrywam tylko zestaw podstawowy (ALL).".format(gate_type))
 
     for idx, val in target_params.items():
-        status = rtt_set_and_verify(jlink, idx, val, is_remote=True)
+        # Traktujemy parametry >= 13 (głównie silnik/slave) ostrożniej
+        is_rem = True if idx >= 13 else False
+        status = rtt_set_and_verify(jlink, idx, val, is_remote=is_rem)
         if not status:
             print("  [BLAD KRYTYCZNY] Nie udalo sie nadpisac zmiennej ID: {}!".format(idx))
             sys.exit(1)
             
-    print("  [OK] Wszystkie {} parametrow wyslano. Czekam 2s na zatwierdzenie we Flash...".format(len(target_params)))
-    time.sleep(2.0)
+    # Wydłużony czas na całkowite zrzucenie cache'u z Mastera na Slave (z 2s na 4s)
+    print("  [OK] Wszystkie {} parametrow wyslano. Czekam 4s na zapis Flash u Slave'a...".format(len(target_params)))
+    time.sleep(4.0)
     
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
     time.sleep(2.0)
@@ -695,7 +692,6 @@ def generate_100_scenarios():
     scenarios.append({"name": "WYCOFANIE: Uzytkownik wszedl i zrezygnowal", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR], "log": "", "count": False})
     scenarios.append({"name": "ALARM PPOZ: Awaryjne otwarcie", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "ppoz 1\n", "seq": seq_lp, "log": "", "count": False, "custom_restore": "ppoz 0\n"})
     
-    # Usterka na stałej przypisanej do srodkowego czujnika (dynamicznie zamiast na sztywno)
     scenarios.append({"name": "USTERKA SENSORA CENTER", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "sensor {} 1\n".format(CENTER_SECURITY_SENSOR), "seq": [], "log": LOG_ALARM_SAFETY, "count": False, "custom_restore": "sensor {} 0\n".format(CENTER_SECURITY_SENSOR)})
     
     scenarios.append({"name": "TAILGATING", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR], "log": LOG_ALARM_TAILGATING, "count": True})
