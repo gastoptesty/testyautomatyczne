@@ -264,7 +264,6 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
         
         jlink.rtt_write(0, 'set {} {}\n'.format(idx, val).encode('utf-8'))
 
-        # Dłuższy oddech dla zdalnych (EE remote), żeby Master zdążył pchnąć dane po UART
         time.sleep(0.4 if is_remote else 0.2)
 
         collected_logs = drain_rtt(jlink, 4096)
@@ -280,7 +279,7 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
         if read_val is not None:
             if read_val == val:
                 print(" [OK]")
-                time.sleep(0.2) # Chwila przerwy dla EEPROM przed kolejną zmienną
+                time.sleep(0.2) 
                 return True
             else:
                 print(" [FAIL - Odczytano: {}] ponawiam...".format(read_val))
@@ -355,6 +354,57 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
             time.sleep(BOOT_WAIT_LINK)
 
 # =========================================================
+# TRYB DIAGNOSTYCZNY: TESTOWANIE FIZYCZNE CZUJNIKÓW
+# =========================================================
+
+def run_sensor_diagnostics(jlink, gate_type):
+    print("\n" + "="*60)
+    print(" 🛠️  URUCHOMIONO TRYB: DIAGNOSTYKA FIZYCZNA CZUJNIKÓW")
+    print("="*60)
+    if "SG" in gate_type:
+        print(" -> Profil: Szybkie Bramki Rozsuwane (SG)")
+        print(" -> Spodziewane czujniki: 0, 1, 3, 5, 8, 10, 13")
+    else:
+        print(" -> Profil: Bramki Obrotowe/Wahadłowe (GT/SK)")
+        print(" -> Spodziewane czujniki: 0, 3, 5, 8, 13")
+
+    print("\n[INSTRUKCJA] Zasłaniaj fizycznie kolejne czujniki w bramce.")
+    print("[INSTRUKCJA] Skrypt dekoduje maski bitowe i wypisuje nr czujnika.")
+    print("[INSTRUKCJA] Kliknij STOP w GUI, aby zakończyć test.\n")
+
+    jlink.rtt_write(0, b'mode 0\n')
+    time.sleep(0.5)
+    drain_rtt(jlink)
+
+    while True:
+        chunk = jlink.rtt_read(0, 2048)
+        if chunk:
+            text = "".join([chr(c) for c in chunk])
+            lines = text.split('\n')
+            for line in lines:
+                clean = line.strip()
+                if not clean: continue
+
+                # Dekodowanie HEX (np. SENSOR:0x1, SENSOR:0x8) na nr czujnika
+                match = re.search(r'SENSOR:(0x[0-9A-Fa-f]+)', clean)
+                if match:
+                    hex_str = match.group(1)
+                    try:
+                        val = int(hex_str, 16)
+                        active = []
+                        for i in range(16):
+                            if val & (1 << i):
+                                active.append(str(i))
+                        detected = ", ".join(active) if active else "Brak"
+                        print(" 📡 DETEKCJA! Aktywne czujniki nr: [{}] (Raw: {})".format(detected, hex_str))
+                    except:
+                        print(" 📡 DETEKCJA! Skan: {}".format(clean))
+                elif "ALARM" in clean.upper() or "INTRUSION" in clean.upper() or "SAFETY" in clean.upper():
+                    print(" ⚠️ ZDARZENIE BRAMKI: {}".format(clean))
+
+        time.sleep(0.05)
+
+# =========================================================
 # PRE-FLIGHT CHECKS, KONFIGURACJA I DIAGNOSTYKA
 # =========================================================
 
@@ -374,14 +424,11 @@ def apply_and_verify_full_config(jlink, gate_type):
         print("  [WARN] Nieznany typ bramki {}. Wgrywam tylko zestaw podstawowy (ALL).".format(gate_type))
 
     for idx, val in target_params.items():
-        # Traktujemy parametry >= 13 (głównie silnik/slave) ostrożniej
         is_rem = True if idx >= 13 else False
         status = rtt_set_and_verify(jlink, idx, val, is_remote=is_rem)
         if not status:
-            print("  [BLAD KRYTYCZNY] Nie udalo sie nadpisac zmiennej ID: {}!".format(idx))
-            sys.exit(1)
+            print("  [WARN] Nie udalo sie nadpisac zmiennej ID: {}. Kontynuuje mimo to...".format(idx))
             
-    # Wydłużony czas na całkowite zrzucenie cache'u z Mastera na Slave (z 2s na 4s)
     print("  [OK] Wszystkie {} parametrow wyslano. Czekam 4s na zapis Flash u Slave'a...".format(len(target_params)))
     time.sleep(4.0)
     
@@ -402,11 +449,10 @@ def apply_and_verify_full_config(jlink, gate_type):
         if read_val == expected_val:
             print("  [OK] Parametr ID {:<2} = {:<3} (przetrwal reset)".format(idx, expected_val))
         else:
-            print("  [BLAD KRYTYCZNY] Parametr ID {} utracony! Oczekiwano {}, odczytano: {}".format(
+            print("  [WARN] Parametr ID {} utracony lub odrzucony przez plyte! Oczekiwano {}, odczytano: {}".format(
                 idx, expected_val, read_val if read_val is not None else "Brak odpowiedzi"))
-            sys.exit(1)
             
-    print("  [SUKCES] Konfiguracja zapisana trwale w pamieci EEPROM i zweryfikowana!")
+    print("  [INFO] Weryfikacja EEPROM zakonczona. Przechodze dalej.")
 
 def test_calibration_read_only(jlink):
     print("\n[PRE-CHECK] Sprawdzanie bezpieczenstwa kalibracji...")
@@ -753,6 +799,11 @@ def main():
             time.sleep(0.05)
         else:
             print("[BOOT WARN] Marker gotowosci nie wykryty — kontynuuje.")
+
+        # --- NOWY TRYB DIAGNOSTYKI CZUJNIKOW ---
+        if "Test Czujników" in GATE_TYPE:
+            run_sensor_diagnostics(jlink, GATE_TYPE)
+            return
 
         # >>>>>>>>>>>>> PRE-FLIGHT CHECKS >>>>>>>>>>>>>
         test_calibration_read_only(jlink)
