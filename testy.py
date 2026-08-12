@@ -33,7 +33,8 @@ PARAM_ALL = {
     21: 10,  # Acc Close (1-20)
     22: 100, # Break Open (50-250)
     23: 100, # Break Close (50-250)
-    28: 14   # Max Torque (0-20) - docelowo i tak nadpisywane optymalizatorem
+    28: 14,  # Max Torque (0-20) - docelowo i tak nadpisywane optymalizatorem
+    40: 2    # Sensor Sensitive (2 = Wylaczenie dolnych czujnikow i uzywanie tylko gornych)
 }
 
 # Parametry specyficzne dla konkretnych bramek
@@ -74,13 +75,12 @@ BOOT_WAIT_LINK     = 5.0
 LOG_SYSTEM_READY   = "Permit manager"   
 SYSTEM_READY_TIMEOUT = 12.0             
 
-RIGHT_SENSOR = 13
-RIGHT_DOWN_SENSOR = 10
-LEFT_SENSOR = 0
-LEFT_DOWN_SENSOR = 1
-RIGHT_SECURITY_SENSOR = 8
-LEFT_SECURITY_SENSOR = 3
-CENTER_SECURITY_SENSOR = 5
+# NOWE MAPOWANIE SENSOROW (Tylko górna linia)
+LEFT_SENSOR = 1
+LEFT_SECURITY_SENSOR = 4
+CENTER_SECURITY_SENSOR = 7
+RIGHT_SECURITY_SENSOR = 9
+RIGHT_SENSOR = 14
 
 right_counter = 0
 left_counter = 0
@@ -281,7 +281,7 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
             return False
 
         jlink.rtt_write(0, b'\n')
-        time.sleep(0.3) # Dajemy czas MCU na zatwierdzenie zmiennej przed odczytem
+        time.sleep(0.3) 
         
         resp = rtt_get_param(jlink, idx, 1.0)
         read_val = parse_get_response(resp, idx)
@@ -694,7 +694,10 @@ def generate_100_scenarios():
     scenarios.append({"name": "TIMEOUT: Nadano uprawnienie L", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [], "log": LOG_TIMEOUT, "count": False, "wait_time": 10})
     scenarios.append({"name": "WYCOFANIE: Uzytkownik wszedl i zrezygnowal", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR], "log": "", "count": False})
     scenarios.append({"name": "ALARM PPOZ: Awaryjne otwarcie", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "ppoz 1\n", "seq": seq_lp, "log": "", "count": False, "custom_restore": "ppoz 0\n"})
-    scenarios.append({"name": "USTERKA SENSORA CENTER", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "sensor 5 1\n", "seq": [], "log": LOG_ALARM_SAFETY, "count": False, "custom_restore": "sensor 5 0\n"})
+    
+    # Usterka na stałej przypisanej do srodkowego czujnika (dynamicznie zamiast na sztywno)
+    scenarios.append({"name": "USTERKA SENSORA CENTER", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "sensor {} 1\n".format(CENTER_SECURITY_SENSOR), "seq": [], "log": LOG_ALARM_SAFETY, "count": False, "custom_restore": "sensor {} 0\n".format(CENTER_SECURITY_SENSOR)})
+    
     scenarios.append({"name": "TAILGATING", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR], "log": LOG_ALARM_TAILGATING, "count": True})
     scenarios.append({"name": "INTRUSION w srodek bramki", "mode": "WOLNE_LEWE_PRAWA", "seq": [CENTER_SECURITY_SENSOR], "log": LOG_ALARM_INTRUSION, "count": False})
     scenarios.append({"name": "ANTI-CRUSH", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR], "interrupt": {"after_index": 0, "sensor": CENTER_SECURITY_SENSOR}, "log": LOG_ALARM_SAFETY, "count": False})
