@@ -362,10 +362,9 @@ def run_sensor_diagnostics(jlink, gate_type):
     print(" 🛠️  URUCHOMIONO TRYB: AUTOMATYCZNA DIAGNOSTYKA CZUJNIKÓW")
     print("="*60)
     
-    print("\n[INFO] Wymuszanie czułości czujników na 0 (aktywacja dolnej i górnej linii optyki)...")
+    print("\n[INFO] Wymuszanie czułości czujników na 0 (aktywacja pełnej linii optyki)...")
     rtt_set_and_verify(jlink, 40, 0, is_remote=True)
-    print("  [OK] Czekam na zapis we Flash...")
-    time.sleep(2.0)
+    time.sleep(1.0)
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
 
     expected_sensors_count = 12
@@ -377,8 +376,8 @@ def run_sensor_diagnostics(jlink, gate_type):
         print("\n -> Profil: Bramki Obrotowe/Wahadłowe (GT/SK)")
         print(" -> Układ: 6 czujników górnych, 6 dolnych (Razem: 12)")
 
-    print("\n[INSTRUKCJA] Przesuń ręką po kolei przez WSZYSTKIE czujniki.")
-    print("[INSTRUKCJA] Skrypt zapisuje sprawne czujniki i sam zakończy test, gdy znajdzie {}.\n".format(expected_sensors_count))
+    print("\n[INSTRUKCJA] Przesuwaj powoli ręką przez WSZYSTKIE czujniki (dół i góra).")
+    print("[INSTRUKCJA] Skrypt zapisuje sprawne czujniki i wyłączy się, gdy zliczy {}.\n".format(expected_sensors_count))
 
     jlink.rtt_write(0, b'mode 0\n')
     time.sleep(0.5)
@@ -395,8 +394,8 @@ def run_sensor_diagnostics(jlink, gate_type):
                 clean = line.strip()
                 if not clean: continue
 
-                # Dekodowanie HEX na nr czujnika
-                match = re.search(r'SENSOR:(0x[0-9A-Fa-f]+)', clean)
+                # Dekodowanie HEX ze standardowej maski gornych czujnikow
+                match = re.search(r'(?:SENSOR|MASK).*?(0x[0-9A-Fa-f]+)', clean, re.IGNORECASE)
                 if match:
                     hex_str = match.group(1)
                     try:
@@ -413,9 +412,9 @@ def run_sensor_diagnostics(jlink, gate_type):
                                     new_found = True
 
                         if new_found:
-                            print(" 📡 [ZALICZONO {}/{}] Wykryto naruszenie! Aktywne w tej chwili: {}".format(
+                            print(" 📡 [ZALICZONO {}/{}] Detekcja! Aktywne w tej chwili: {}".format(
                                 len(tested_sensors), expected_sensors_count, ", ".join(active_now)))
-                            print("     -> Lista sprawnych: [{}]".format(", ".join(sorted(tested_sensors, key=int))))
+                            print("     -> Zarejestrowane łącznie: [{}]".format(", ".join(sorted(tested_sensors, key=int))))
 
                             if len(tested_sensors) >= expected_sensors_count:
                                 print("\n" + "="*60)
@@ -425,9 +424,11 @@ def run_sensor_diagnostics(jlink, gate_type):
                                 return
                     except:
                         pass
-                elif "ALARM" in clean.upper() or "INTRUSION" in clean.upper() or "SAFETY" in clean.upper():
-                    # Opcjonalne logowanie błędów bramki z tła (nie przerywa działania)
-                    pass 
+                else:
+                    # Jesli skrypt nie rozpozna logu, wypluje go tutaj w czystej postaci!
+                    # Odfiltrowujemy tylko naturalny szum tla (TICK i Manager)
+                    if "Permit manager" not in clean and "TICK" not in clean.upper():
+                        print(" [RAW LOG BRAMKI] {}".format(clean))
 
         time.sleep(0.05)
 
