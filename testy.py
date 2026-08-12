@@ -359,7 +359,7 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
 
 def run_sensor_diagnostics(jlink, gate_type):
     print("\n" + "="*60)
-    print(" 🛠️  URUCHOMIONO TRYB: DIAGNOSTYKA FIZYCZNA CZUJNIKÓW")
+    print(" 🛠️  URUCHOMIONO TRYB: AUTOMATYCZNA DIAGNOSTYKA CZUJNIKÓW")
     print("="*60)
     
     print("\n[INFO] Wymuszanie czułości czujników na 0 (aktywacja dolnej i górnej linii optyki)...")
@@ -368,20 +368,23 @@ def run_sensor_diagnostics(jlink, gate_type):
     time.sleep(2.0)
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
 
+    expected_sensors_count = 12
+
     if "SG" in gate_type:
         print("\n -> Profil: Szybkie Bramki Rozsuwane (SG)")
-        print(" -> Spodziewane czujniki: 0, 1, 3, 5, 8, 10, 13")
+        print(" -> Układ: 5 czujników górnych, 7 dolnych (Razem: 12)")
     else:
         print("\n -> Profil: Bramki Obrotowe/Wahadłowe (GT/SK)")
-        print(" -> Spodziewane czujniki: 0, 3, 5, 8, 13")
+        print(" -> Układ: 6 czujników górnych, 6 dolnych (Razem: 12)")
 
-    print("\n[INSTRUKCJA] Zasłaniaj fizycznie kolejne czujniki w bramce.")
-    print("[INSTRUKCJA] Skrypt dekoduje maski bitowe i wypisuje nr czujnika.")
-    print("[INSTRUKCJA] Kliknij STOP w GUI, aby zakończyć test.\n")
+    print("\n[INSTRUKCJA] Przesuń ręką po kolei przez WSZYSTKIE czujniki.")
+    print("[INSTRUKCJA] Skrypt zapisuje sprawne czujniki i sam zakończy test, gdy znajdzie {}.\n".format(expected_sensors_count))
 
     jlink.rtt_write(0, b'mode 0\n')
     time.sleep(0.5)
     drain_rtt(jlink)
+
+    tested_sensors = set()
 
     while True:
         chunk = jlink.rtt_read(0, 2048)
@@ -392,22 +395,39 @@ def run_sensor_diagnostics(jlink, gate_type):
                 clean = line.strip()
                 if not clean: continue
 
-                # Dekodowanie HEX (np. SENSOR:0x1, SENSOR:0x8) na nr czujnika
+                # Dekodowanie HEX na nr czujnika
                 match = re.search(r'SENSOR:(0x[0-9A-Fa-f]+)', clean)
                 if match:
                     hex_str = match.group(1)
                     try:
                         val = int(hex_str, 16)
-                        active = []
+                        active_now = []
+                        new_found = False
+                        
                         for i in range(16):
                             if val & (1 << i):
-                                active.append(str(i))
-                        detected = ", ".join(active) if active else "Brak"
-                        print(" 📡 DETEKCJA! Aktywne czujniki nr: [{}] (Raw: {})".format(detected, hex_str))
+                                sensor_id = str(i)
+                                active_now.append(sensor_id)
+                                if sensor_id not in tested_sensors:
+                                    tested_sensors.add(sensor_id)
+                                    new_found = True
+
+                        if new_found:
+                            print(" 📡 [ZALICZONO {}/{}] Wykryto naruszenie! Aktywne w tej chwili: {}".format(
+                                len(tested_sensors), expected_sensors_count, ", ".join(active_now)))
+                            print("     -> Lista sprawnych: [{}]".format(", ".join(sorted(tested_sensors, key=int))))
+
+                            if len(tested_sensors) >= expected_sensors_count:
+                                print("\n" + "="*60)
+                                print(" ✅ [SUKCES] Przetestowano pomyślnie wszystkie {} czujników!".format(expected_sensors_count))
+                                print(" ✅ Test diagnostyczny zakończony automatycznie.")
+                                print("="*60 + "\n")
+                                return
                     except:
-                        print(" 📡 DETEKCJA! Skan: {}".format(clean))
+                        pass
                 elif "ALARM" in clean.upper() or "INTRUSION" in clean.upper() or "SAFETY" in clean.upper():
-                    print(" ⚠️ ZDARZENIE BRAMKI: {}".format(clean))
+                    # Opcjonalne logowanie błędów bramki z tła (nie przerywa działania)
+                    pass 
 
         time.sleep(0.05)
 
@@ -509,7 +529,7 @@ def test_diagnostic_readonly(jlink):
         time.sleep(0.5)
         
     if uptime_val is None:
-        print("  [WARN] Brak odpowiedzi dla ID 118, pomijam ten konkretny check.")
+        print("  [WARN] Brak odpowiedzi dla ID 118, pomijam ten konkret check.")
         return
         
     jlink.rtt_write(0, b'set 118 9999\n')
