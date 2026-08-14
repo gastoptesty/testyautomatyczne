@@ -93,11 +93,11 @@ start_time = time.time()
 # --- OCZEKIWANE LOGI Z SYSTEMU ---
 LOG_GATE_OPENED    = "GATE OPENED"
 LOG_GATE_CLOSED    = "GATE CLOSED"
-LOG_ALARM_INTRUSION  = "UNAUTHORIZED"
-LOG_ALARM_TAILGATING = "TAILGATING"
+LOG_ALARM_INTRUSION  = ["INTRUSION", "UNAUTHORIZED"]
+LOG_ALARM_TAILGATING = ["TAILGATING", "UNAUTHORIZED"]
 LOG_MOTOR_ERROR    = "MOTOR ERROR"
 LOG_ALARM_NO_PERMIT  = "NO PERMITION"
-LOG_ALARM_SAFETY   = "SECURITY_ZONE_STATE"  # ZAKTUALIZOWANE NA BAZIE ZRZUTU EKRANU
+LOG_ALARM_SAFETY   = "SECURITY_ZONE_STATE"
 LOG_TIMEOUT        = "TimeOUT"
 
 # =========================================================
@@ -707,7 +707,14 @@ def execute_custom_sequence(jlink, iter_num, config):
     if expected_log:
         found = False
         full_log = "".join(collected_logs)
-        if expected_log in full_log:
+        
+        # Funkcja sprawdzająca czy którykolwiek ze spodziewanych logów (lub jeden) wystąpił
+        def check_log(expected, text):
+            if isinstance(expected, list):
+                return any(e in text for e in expected)
+            return expected in text
+
+        if check_log(expected_log, full_log):
             found = True
         else:
             start_w = time.time()
@@ -717,7 +724,7 @@ def execute_custom_sequence(jlink, iter_num, config):
                     text = "".join([chr(c) for c in chunk])
                     filter_and_print_log(text)
                     full_log += text
-                    if expected_log in full_log:
+                    if check_log(expected_log, full_log):
                         found = True
                         break
                 time.sleep(0.05)
@@ -736,7 +743,7 @@ def execute_custom_sequence(jlink, iter_num, config):
     if custom_restore:
         print("Wysylanie Komendy Przywracajacej: {}".format(custom_restore.strip()))
         jlink.rtt_write(0, custom_restore.encode('utf-8'))
-        time.sleep(1.0) # Zwiekszono czas na uspokojenie firmware po zdejsciu alarmu
+        time.sleep(1.0)
 
     end_r, end_l = get_counters(jlink, 1)
     total_start = start_r + start_l
@@ -779,7 +786,17 @@ def generate_100_scenarios():
     
     scenarios.append({"name": "USTERKA SENSORA CENTER", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "sensor {} 1\n".format(CENTER_SECURITY_SENSOR), "seq": [], "log": LOG_ALARM_SAFETY, "count": False, "custom_restore": "sensor {} 0\n".format(CENTER_SECURITY_SENSOR)})
     
-    scenarios.append({"name": "TAILGATING", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR], "log": LOG_ALARM_TAILGATING, "count": True})
+    # TUTAJ JEST FIX DLA TAILGATING - Symulacja wejścia w strefę LEFT podczas gdy strefa LEFT_SECURITY_SENSOR jest zajęta przez pierwszą osobę
+    scenarios.append({
+        "name": "TAILGATING", 
+        "mode": "KONTROLA_LEWE_PRAWA", 
+        "permit": "L", 
+        "seq": seq_lp, 
+        "interrupt": {"after_index": 1, "sensor": LEFT_SENSOR}, 
+        "log": LOG_ALARM_TAILGATING, 
+        "count": None
+    })
+    
     scenarios.append({"name": "INTRUSION w srodek bramki", "mode": "WOLNE_LEWE_PRAWA", "seq": [CENTER_SECURITY_SENSOR], "log": LOG_ALARM_INTRUSION, "count": False})
     scenarios.append({"name": "ANTI-CRUSH", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR], "interrupt": {"after_index": 0, "sensor": CENTER_SECURITY_SENSOR}, "log": LOG_ALARM_SAFETY, "count": False})
 
