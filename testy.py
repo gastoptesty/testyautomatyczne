@@ -182,49 +182,6 @@ def add_permission(jlink, direction):
         jlink.rtt_write(0, b'add_r\n')
     time.sleep(0.2)
 
-def get_counters(jlink, timeout_sec=1.0):
-    global right_counter, left_counter
-
-    drain_rtt(jlink, 4096)
-    
-    # Próba systemowego odczytu ID 2 (Lewy) i ID 3 (Prawy) z pamieci EEPROM
-    resp_l = rtt_get_param(jlink, 2, timeout_sec)
-    val_l = parse_get_response(resp_l, 2)
-    
-    resp_r = rtt_get_param(jlink, 3, timeout_sec)
-    val_r = parse_get_response(resp_r, 3)
-
-    if val_l is not None and val_r is not None:
-        left_counter = val_l
-        right_counter = val_r
-        return right_counter, left_counter
-
-    # Fallback na starą komendę jeśli odczyt ID zawiedzie
-    print("\n[WARN] get_counters: Nie mozna odczytac ID 2/3. Przechodze na komende 'counter'...")
-    drain_rtt(jlink, 4096)
-    jlink.rtt_write(0, b'counter\n')
-    
-    time.sleep(0.1)
-    rtt = ''
-    start_time_c = time.time()
-    
-    while time.time() - start_time_c < timeout_sec:
-        chunk = jlink.rtt_read(0, 1024)
-        if chunk:
-            rtt += "".join([chr(c) for c in chunk])
-        time.sleep(0.02)
-
-    matches_r = re.findall(r"(?i)right.*?(\d+)", rtt)
-    matches_l = re.findall(r"(?i)left.*?(\d+)", rtt)
-
-    if matches_r and matches_l:
-        right_counter = int(matches_r[-1])
-        left_counter = int(matches_l[-1])
-        return right_counter, left_counter
-
-    print("[WARN] get_counters: Zawiodly obie metody parsowania. Uzywam ostatnich wartosci (L:{}, R:{}).".format(left_counter, right_counter))
-    return right_counter, left_counter
-
 # =========================================================
 # FUNKCJE RTT (GET / SET / VERIFY)
 # =========================================================
@@ -302,6 +259,44 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
         time.sleep(0.5)
 
     return False
+
+def get_counters(jlink, timeout_sec=1.5):
+    global right_counter, left_counter
+
+    # Zlewamy stary bufor
+    drain_rtt(jlink, 4096)
+    
+    # Wywołanie komendy zliczania (najpewniejsza droga, ale z dokładnym Regexem!)
+    jlink.rtt_write(0, b'counter\n')
+    
+    time.sleep(0.1)
+    rtt = ''
+    start_time_c = time.time()
+    
+    while time.time() - start_time_c < timeout_sec:
+        chunk = jlink.rtt_read(0, 1024)
+        if chunk:
+            rtt += "".join([chr(c) for c in chunk])
+            # Jeśli znajdziemy obie frazy, przerywamy wczesniej, zeby nie marnowac czasu
+            if "right counter" in rtt.lower() and "left counter" in rtt.lower():
+                time.sleep(0.05)
+                chunk = jlink.rtt_read(0, 1024)
+                if chunk: rtt += "".join([chr(c) for c in chunk])
+                break
+        time.sleep(0.02)
+
+    # NOWY, KULOODPORNY REGEX: Szuka TYLKO i wylacznie precyzyjnej zbitki wyrazow "right/left counter:" 
+    # To wyeliminuje wylapywanie losowych cyfr z tła (np. z komunikatów "RIGHT_SIDE_OPENED")
+    matches_r = re.findall(r"(?i)right\s+counter\s*:\s*(\d+)", rtt)
+    matches_l = re.findall(r"(?i)left\s+counter\s*:\s*(\d+)", rtt)
+
+    if matches_r and matches_l:
+        right_counter = int(matches_r[-1])
+        left_counter = int(matches_l[-1])
+        return right_counter, left_counter
+
+    print("\n[WARN] get_counters: Nie udalo sie odnalezc scislej frazy licznika! Uzywam ostatnich wartosci (L:{}, R:{}).".format(left_counter, right_counter))
+    return right_counter, left_counter
 
 def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
     if delay is None:
@@ -721,7 +716,7 @@ def execute_custom_sequence(jlink, iter_num, config):
             jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
             do_sleep(0.3)
 
-        # --- Wymuszone czyszczenie wirtualnej przestrzeni (Ghost removal) ---
+        # --- FIX: Wymuszone czyszczenie wirtualnej przestrzeni (Ghost removal) ---
         for s in [0, 1, 3, 5, 8, 10, 13]:
             jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
             time.sleep(0.05) 
@@ -770,15 +765,18 @@ def execute_custom_sequence(jlink, iter_num, config):
     total_start = start_r + start_l
     total_end   = end_r + end_l
 
-    # --- NOWA LOGIKA WERYFIKACJI (Dostosowana do blokady EEPROM w Sensor Mode=1) ---
+    # --- ZAAWANSOWANA WERYFIKACJA (Obsługa trybu symulacji, który blokuje EEPROM) ---
     if expect_count is True:
         if total_end <= total_start:
-            print("\n[INFO] Licznik przejsc (EEPROM) nie ulegl zmianie. To normalne w trybie wirtualnym (Sensor Mode = 1).")
-            # Dodatkowe zabezpieczenie: Weryfikacja po zrzucie wewnetrznym Permit Managera
+            print("\n[INFO] Licznik przejsc z komendy 'counter' nie ulegl zmianie. To naturalne w trybie wirtualnym (Sensor Mode = 1).")
+            # Ratunkowa weryfikacja operacji na RAM
             if "SUBTRACT" in full_log:
-                print("SUKCES: Oprogramowanie Permit Manager poprawnie zaliczylo przejscie i odjelo uprawnienie (SUBTRACT)!")
+                print("SUKCES: Oprogramowanie Permit Manager pomyslnie zaliczylo przejscie w RAM (Commit access SUBTRACT)!")
+            elif LOG_GATE_CLOSED in full_log:
+                print("SUKCES: Brama wrocila do stanu zamknietego. Przejscie uznane za zakonczone poprawnie.")
             else:
-                print("SUKCES: Brama wrocila do stanu zamknietego. Przejscie uznane za zakonczone.")
+                print("\nBLAD: Przejscie zignorowane przez logike Permit Managera! - TEST FAILED")
+                sys.exit(1)
         else:
             right_counter, left_counter = end_r, end_l
             print("\nSUKCES: Licznik EEPROM wzrosl (L:{}, R:{})".format(left_counter, right_counter))
@@ -792,7 +790,7 @@ def execute_custom_sequence(jlink, iter_num, config):
             
     elif expect_count is None:
         right_counter, left_counter = end_r, end_l
-        print("\nSUKCES: Weryfikacja zliczania pominieta (zgodnie ze scenariuszem).")
+        print("\nSUKCES: Weryfikacja licznika pominieta (ustawienie specjalne).")
 
 # =========================================================
 # GENERATOR BAZY TESTOW BEHAWIORALNYCH
