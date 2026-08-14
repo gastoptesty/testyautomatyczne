@@ -182,6 +182,38 @@ def add_permission(jlink, direction):
         jlink.rtt_write(0, b'add_r\n')
     time.sleep(0.2)
 
+def get_counters(jlink, timeout_sec=1.5):
+    global right_counter, left_counter
+
+    drain_rtt(jlink, 4096)
+    jlink.rtt_write(0, b'counter\n')
+    
+    time.sleep(0.1)
+    rtt = ''
+    start_time_c = time.time()
+    
+    while time.time() - start_time_c < timeout_sec:
+        chunk = jlink.rtt_read(0, 1024)
+        if chunk:
+            rtt += "".join([chr(c) for c in chunk])
+            if "right counter" in rtt.lower() and "left counter" in rtt.lower():
+                time.sleep(0.05)
+                chunk = jlink.rtt_read(0, 1024)
+                if chunk: rtt += "".join([chr(c) for c in chunk])
+                break
+        time.sleep(0.02)
+
+    matches_r = re.findall(r"(?i)right\s+counter\s*:\s*(\d+)", rtt)
+    matches_l = re.findall(r"(?i)left\s+counter\s*:\s*(\d+)", rtt)
+
+    if matches_r and matches_l:
+        right_counter = int(matches_r[-1])
+        left_counter = int(matches_l[-1])
+        return right_counter, left_counter
+
+    print("\n[WARN] get_counters: Nie udalo sie odnalezc scislej frazy licznika! Uzywam ostatnich wartosci (L:{}, R:{}).".format(left_counter, right_counter))
+    return right_counter, left_counter
+
 # =========================================================
 # FUNKCJE RTT (GET / SET / VERIFY)
 # =========================================================
@@ -259,44 +291,6 @@ def rtt_set_and_verify(jlink, idx, val, is_remote=False):
         time.sleep(0.5)
 
     return False
-
-def get_counters(jlink, timeout_sec=1.5):
-    global right_counter, left_counter
-
-    # Zlewamy stary bufor
-    drain_rtt(jlink, 4096)
-    
-    # Wywołanie komendy zliczania (najpewniejsza droga, ale z dokładnym Regexem!)
-    jlink.rtt_write(0, b'counter\n')
-    
-    time.sleep(0.1)
-    rtt = ''
-    start_time_c = time.time()
-    
-    while time.time() - start_time_c < timeout_sec:
-        chunk = jlink.rtt_read(0, 1024)
-        if chunk:
-            rtt += "".join([chr(c) for c in chunk])
-            # Jeśli znajdziemy obie frazy, przerywamy wczesniej, zeby nie marnowac czasu
-            if "right counter" in rtt.lower() and "left counter" in rtt.lower():
-                time.sleep(0.05)
-                chunk = jlink.rtt_read(0, 1024)
-                if chunk: rtt += "".join([chr(c) for c in chunk])
-                break
-        time.sleep(0.02)
-
-    # NOWY, KULOODPORNY REGEX: Szuka TYLKO i wylacznie precyzyjnej zbitki wyrazow "right/left counter:" 
-    # To wyeliminuje wylapywanie losowych cyfr z tła (np. z komunikatów "RIGHT_SIDE_OPENED")
-    matches_r = re.findall(r"(?i)right\s+counter\s*:\s*(\d+)", rtt)
-    matches_l = re.findall(r"(?i)left\s+counter\s*:\s*(\d+)", rtt)
-
-    if matches_r and matches_l:
-        right_counter = int(matches_r[-1])
-        left_counter = int(matches_l[-1])
-        return right_counter, left_counter
-
-    print("\n[WARN] get_counters: Nie udalo sie odnalezc scislej frazy licznika! Uzywam ostatnich wartosci (L:{}, R:{}).".format(left_counter, right_counter))
-    return right_counter, left_counter
 
 def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
     if delay is None:
@@ -626,11 +620,6 @@ def test_find_optimal_torque(jlink):
                     time.sleep(0.3)
                 jlink.rtt_write(0, 'sensor {} 0\n'.format(seq_lp[i]).encode('utf-8'))
                 time.sleep(0.3)
-            
-            # Wymuszone zrzucenie stanow dla pewnosci
-            for s in [0, 1, 3, 5, 8, 10, 13]:
-                jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
-                time.sleep(0.05)
                 
             check_for_log_bool(jlink, LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
             time.sleep(1)
@@ -715,11 +704,6 @@ def execute_custom_sequence(jlink, iter_num, config):
 
             jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
             do_sleep(0.3)
-
-        # --- FIX: Wymuszone czyszczenie wirtualnej przestrzeni (Ghost removal) ---
-        for s in [0, 1, 3, 5, 8, 10, 13]:
-            jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
-            time.sleep(0.05) 
 
     if expected_log:
         found = False
