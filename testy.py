@@ -620,6 +620,11 @@ def test_find_optimal_torque(jlink):
                     time.sleep(0.3)
                 jlink.rtt_write(0, 'sensor {} 0\n'.format(seq_lp[i]).encode('utf-8'))
                 time.sleep(0.3)
+            
+            # Celowane czyszczenie (zamiatanie wirtualnych nóg)
+            for s in set(seq_lp):
+                jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
+                time.sleep(0.05)
                 
             check_for_log_bool(jlink, LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
             time.sleep(1)
@@ -688,10 +693,11 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.stdout.flush()
 
     if seq:
-        for i in range(len(seq)):
-            jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[i]).encode('utf-8'))
-            do_sleep(0.3)
+        # 1. Zoptymalizowana sekwencja ruchu - bez wysyłania podwójnych jedynek, zatykajacych bufor
+        jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[0]).encode('utf-8'))
+        do_sleep(0.3)
 
+        for i in range(len(seq)):
             if interrupt_step and i == interrupt_step["after_index"]:
                 print("\n[!] ALARM: Symulacja naruszenia strefy {}!".format(interrupt_step['sensor']))
                 jlink.rtt_write(0, 'sensor {} 1\n'.format(interrupt_step["sensor"]).encode('utf-8'))
@@ -704,6 +710,15 @@ def execute_custom_sequence(jlink, iter_num, config):
 
             jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
             do_sleep(0.3)
+
+        # 2. INTELIGENTNE ZAMIATANIE DUCHÓW (Targeted Ghost Removal)
+        # Sprzątamy dokładnie tylko te czujniki, z których przed chwilą skorzystaliśmy
+        used_sensors = set(seq)
+        if interrupt_step:
+            used_sensors.add(interrupt_step["sensor"])
+        for s in used_sensors:
+            jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
+            time.sleep(0.05) 
 
     if expected_log:
         found = False
@@ -749,7 +764,7 @@ def execute_custom_sequence(jlink, iter_num, config):
     total_start = start_r + start_l
     total_end   = end_r + end_l
 
-    # --- ZAAWANSOWANA WERYFIKACJA (Obsługa trybu symulacji, który blokuje EEPROM) ---
+    # --- ZAAWANSOWANA WERYFIKACJA LICZNIKA (Weryfikacja pamieci EEPROM i pamieci RAM) ---
     if expect_count is True:
         if total_end <= total_start:
             print("\n[INFO] Licznik przejsc z komendy 'counter' nie ulegl zmianie. To naturalne w trybie wirtualnym (Sensor Mode = 1).")
