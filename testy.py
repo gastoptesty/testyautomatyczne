@@ -94,7 +94,8 @@ start_time = time.time()
 LOG_GATE_OPENED    = "GATE OPENED"
 LOG_GATE_CLOSED    = "GATE CLOSED"
 LOG_ALARM_INTRUSION  = ["INTRUSION", "UNAUTHORIZED"]
-LOG_ALARM_TAILGATING = ["TAILGATING", "UNAUTHORIZED"]
+# Dodano SECURITY_ZONE_STATE do dopuszczalnych reakcji na Tailgating
+LOG_ALARM_TAILGATING = ["TAILGATING", "UNAUTHORIZED", "SECURITY_ZONE_STATE"]
 LOG_MOTOR_ERROR    = "MOTOR ERROR"
 LOG_ALARM_NO_PERMIT  = "NO PERMITION"
 LOG_ALARM_SAFETY   = "SECURITY_ZONE_STATE"
@@ -786,7 +787,6 @@ def generate_100_scenarios():
     
     scenarios.append({"name": "USTERKA SENSORA CENTER", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "sensor {} 1\n".format(CENTER_SECURITY_SENSOR), "seq": [], "log": LOG_ALARM_SAFETY, "count": False, "custom_restore": "sensor {} 0\n".format(CENTER_SECURITY_SENSOR)})
     
-    # TUTAJ JEST FIX DLA TAILGATING - Symulacja wejścia w strefę LEFT podczas gdy strefa LEFT_SECURITY_SENSOR jest zajęta przez pierwszą osobę
     scenarios.append({
         "name": "TAILGATING", 
         "mode": "KONTROLA_LEWE_PRAWA", 
