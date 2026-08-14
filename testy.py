@@ -34,25 +34,26 @@ PARAM_ALL = {
     22: 100, # Break Open (50-250)
     23: 100, # Break Close (50-250)
     28: 14,  # Max Torque (0-20) - docelowo i tak nadpisywane optymalizatorem
-    40: 2    # Sensor Sensitive (2 = Ignoruje fizyczne dolne czujniki w automatach!)
+    40: 2    # Sensor Sensitive (2 = Ignoruje fizyczne dolne czujniki w automatach)
 }
 
 # Parametry specyficzne dla konkretnych bramek
+# ID 39 na 1 -> TWARDE WYMUSZENIE TRYBU WIRTUALNEGO (Zignorowanie fizyki)
 PARAM_SG = {
     27: 10, # Close Delay (8-20)
     32: 1,  # Hamulec używaj (0-1)
-    39: 0   # Sensor mode (0-1)
+    39: 1   # Sensor mode (1 = Tryb symulacji / zignoruj hardware)
 }
 
 PARAM_GT = {
     27: 10, # Close Delay
-    39: 0   # Sensor mode
+    39: 1   # Sensor mode (1 = Tryb symulacji / zignoruj hardware)
 }
 
 PARAM_SK = {
     27: 10, # Close Delay
     32: 1,  # Hamulec używaj
-    39: 0   # Sensor mode
+    39: 1   # Sensor mode (1 = Tryb symulacji / zignoruj hardware)
 }
 
 PARAM_BR = {
@@ -75,7 +76,7 @@ BOOT_WAIT_LINK     = 5.0
 LOG_SYSTEM_READY   = "Permit manager"   
 SYSTEM_READY_TIMEOUT = 12.0             
 
-# STARE, POPRAWNE LOGICZNIE MAPOWANIE SENSOROW (Oczekiwane przez Permit Manager)
+# LOGICZNE MAPOWANIE SENSOROW (Oczekiwane przez Permit Manager)
 RIGHT_SENSOR = 13
 RIGHT_DOWN_SENSOR = 10
 LEFT_SENSOR = 0
@@ -364,6 +365,10 @@ def run_sensor_diagnostics(jlink, gate_type):
     
     print("\n[INFO] Wymuszanie czułości czujników na 0 (aktywacja pełnej linii optyki)...")
     rtt_set_and_verify(jlink, 40, 0, is_remote=True)
+    
+    print("[INFO] Wymuszanie trybu sprzętowego czujników (Sensor Mode = 0)...")
+    rtt_set_and_verify(jlink, 39, 0, is_remote=True)
+    
     time.sleep(1.0)
     safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
 
@@ -394,9 +399,12 @@ def run_sensor_diagnostics(jlink, gate_type):
                 clean = line.strip()
                 if not clean: continue
 
-                # Dekodowanie HEX ze standardowej maski gornych czujnikow
-                match = re.search(r'(?:SENSOR|MASK).*?(0x[0-9A-Fa-f]+)', clean, re.IGNORECASE)
-                if match:
+                # Filtracja uciążliwego spamu w trybie testu, żeby nie zaciemniać konsoli
+                if "sensor ->" in clean:
+                    pass
+                # Dekodowanie HEX na nr czujnika
+                elif re.search(r'(?:SENSOR|MASK).*?(0x[0-9A-Fa-f]+)', clean, re.IGNORECASE):
+                    match = re.search(r'(?:SENSOR|MASK).*?(0x[0-9A-Fa-f]+)', clean, re.IGNORECASE)
                     hex_str = match.group(1)
                     try:
                         val = int(hex_str, 16)
@@ -425,9 +433,7 @@ def run_sensor_diagnostics(jlink, gate_type):
                     except:
                         pass
                 else:
-                    # Jesli skrypt nie rozpozna logu, wypluje go tutaj w czystej postaci!
-                    # Odfiltrowujemy tylko naturalny szum tla (TICK i Manager)
-                    if "Permit manager" not in clean and "TICK" not in clean.upper():
+                    if "Permit manager" not in clean and "TICK" not in clean.upper() and "sensor" not in clean.lower():
                         print(" [RAW LOG BRAMKI] {}".format(clean))
 
         time.sleep(0.05)
@@ -604,7 +610,7 @@ def test_find_optimal_torque(jlink):
             print("   [V] Moment {} wystarczajacy do ruchu.".format(tq))
             successful_torques.append(tq)
             
-            print("   [INFO] Symulacja fizycznego przejscia by zresetowac stan bramki...")
+            print("   [INFO] Symulacja wirtualnego przejścia by zresetować stan bramki...")
             seq_lp = [LEFT_SENSOR, LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR]
             
             for i in range(len(seq_lp)):
@@ -677,6 +683,12 @@ def execute_custom_sequence(jlink, iter_num, config):
                 collected_logs.append(text)
             time.sleep(0.02)
 
+    # Odfiltrowujemy irytujące echa z konsoli przy samym teście
+    def filter_and_print_log(text):
+        if "sensor ->" not in text:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+
     if seq:
         for i in range(len(seq)):
             jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[i]).encode('utf-8'))
@@ -706,8 +718,7 @@ def execute_custom_sequence(jlink, iter_num, config):
                 chunk = jlink.rtt_read(0, 1024)
                 if chunk:
                     text = "".join([chr(c) for c in chunk])
-                    sys.stdout.write(text)
-                    sys.stdout.flush()
+                    filter_and_print_log(text)
                     full_log += text
                     if expected_log in full_log:
                         found = True
@@ -717,7 +728,7 @@ def execute_custom_sequence(jlink, iter_num, config):
         if not found:
             print("\nBLAD: Oczekiwano logu '{}', ale go zabraklo! - TEST FAILED".format(expected_log))
             print("--- Zgromadzone logi z tego testu ---")
-            print(full_log)
+            print(re.sub(r'sensor ->.*?\n', '', full_log)) # Czyszczenie z niepotrzebnych echa przed wydrukiem
             print("-------------------------------------")
             play_beep(440, 500)
             sys.exit(1)
