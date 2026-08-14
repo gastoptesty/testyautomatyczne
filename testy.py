@@ -93,7 +93,7 @@ start_time = time.time()
 # --- OCZEKIWANE LOGI Z SYSTEMU ---
 LOG_GATE_OPENED    = "GATE OPENED"
 LOG_GATE_CLOSED    = "GATE CLOSED"
-LOG_ALARM_INTRUSION  = "INTRUSION"
+LOG_ALARM_INTRUSION  = "UNAUTHORIZED"  # Zaktualizowane na bazie logów z oprogramowania
 LOG_ALARM_TAILGATING = "TAILGATING"
 LOG_MOTOR_ERROR    = "MOTOR ERROR"
 LOG_ALARM_NO_PERMIT  = "NO PERMITION"
@@ -399,10 +399,8 @@ def run_sensor_diagnostics(jlink, gate_type):
                 clean = line.strip()
                 if not clean: continue
 
-                # Filtracja uciążliwego spamu w trybie testu, żeby nie zaciemniać konsoli
                 if "sensor ->" in clean:
                     pass
-                # Dekodowanie HEX na nr czujnika
                 elif re.search(r'(?:SENSOR|MASK).*?(0x[0-9A-Fa-f]+)', clean, re.IGNORECASE):
                     match = re.search(r'(?:SENSOR|MASK).*?(0x[0-9A-Fa-f]+)', clean, re.IGNORECASE)
                     hex_str = match.group(1)
@@ -683,7 +681,6 @@ def execute_custom_sequence(jlink, iter_num, config):
                 collected_logs.append(text)
             time.sleep(0.02)
 
-    # Odfiltrowujemy irytujące echa z konsoli przy samym teście
     def filter_and_print_log(text):
         if "sensor ->" not in text:
             sys.stdout.write(text)
@@ -728,7 +725,7 @@ def execute_custom_sequence(jlink, iter_num, config):
         if not found:
             print("\nBLAD: Oczekiwano logu '{}', ale go zabraklo! - TEST FAILED".format(expected_log))
             print("--- Zgromadzone logi z tego testu ---")
-            print(re.sub(r'sensor ->.*?\n', '', full_log)) # Czyszczenie z niepotrzebnych echa przed wydrukiem
+            print(re.sub(r'sensor ->.*?\n', '', full_log)) 
             print("-------------------------------------")
             play_beep(440, 500)
             sys.exit(1)
