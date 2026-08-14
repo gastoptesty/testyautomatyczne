@@ -94,7 +94,6 @@ start_time = time.time()
 LOG_GATE_OPENED    = "GATE OPENED"
 LOG_GATE_CLOSED    = "GATE CLOSED"
 LOG_ALARM_INTRUSION  = ["INTRUSION", "UNAUTHORIZED"]
-# Dodano SECURITY_ZONE_STATE do dopuszczalnych reakcji na Tailgating
 LOG_ALARM_TAILGATING = ["TAILGATING", "UNAUTHORIZED", "SECURITY_ZONE_STATE"]
 LOG_MOTOR_ERROR    = "MOTOR ERROR"
 LOG_ALARM_NO_PERMIT  = "NO PERMITION"
@@ -739,7 +738,7 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.exit(1)
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
 
-    time.sleep(1)
+    time.sleep(2.5) # Zwiekszono czas na uspokojenie firmware po tescie i fizyczne zamkniecie skrzydel bramki
 
     if custom_restore:
         print("Wysylanie Komendy Przywracajacej: {}".format(custom_restore.strip()))
@@ -797,7 +796,8 @@ def generate_100_scenarios():
         "count": None
     })
     
-    scenarios.append({"name": "INTRUSION w srodek bramki", "mode": "WOLNE_LEWE_PRAWA", "seq": [CENTER_SECURITY_SENSOR], "log": LOG_ALARM_INTRUSION, "count": False})
+    # Zmieniono mode na BLOKADA, poniewaz w WOLNE wejscie w sam srodek tylko bezpiecznie zamyka bramke zamiast wywalac alarm
+    scenarios.append({"name": "INTRUSION w srodek bramki", "mode": "BLOKADA_LEWE_PRAWA", "seq": [CENTER_SECURITY_SENSOR], "log": LOG_ALARM_INTRUSION, "count": False})
     scenarios.append({"name": "ANTI-CRUSH", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR], "interrupt": {"after_index": 0, "sensor": CENTER_SECURITY_SENSOR}, "log": LOG_ALARM_SAFETY, "count": False})
 
     for i in range(15):
