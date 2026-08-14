@@ -619,6 +619,11 @@ def test_find_optimal_torque(jlink):
                     time.sleep(0.3)
                 jlink.rtt_write(0, 'sensor {} 0\n'.format(seq_lp[i]).encode('utf-8'))
                 time.sleep(0.3)
+            
+            # Wymuszone zrzucenie stanow dla pewnosci
+            for s in [0, 1, 3, 5, 8, 10, 13]:
+                jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
+                time.sleep(0.05)
                 
             check_for_log_bool(jlink, LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
             time.sleep(1)
@@ -704,6 +709,12 @@ def execute_custom_sequence(jlink, iter_num, config):
             jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
             do_sleep(0.3)
 
+        # --- FIX: Wymuszone czyszczenie wirtualnej przestrzeni (Ghost removal) ---
+        # Zapobiega blokowaniu bramki przez zgubione pakiety RTT
+        for s in [0, 1, 3, 5, 8, 10, 13]:
+            jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
+            time.sleep(0.05) # Powolne, pewne wygaszenie strefy
+
     if expected_log:
         found = False
         full_log = "".join(collected_logs)
@@ -738,7 +749,7 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.exit(1)
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
 
-    time.sleep(2.5) # Zwiekszono czas na uspokojenie firmware po tescie i fizyczne zamkniecie skrzydel bramki
+    time.sleep(2.5) # Czas na uspokojenie firmware po tescie i fizyczne zamkniecie skrzydel bramki
 
     if custom_restore:
         print("Wysylanie Komendy Przywracajacej: {}".format(custom_restore.strip()))
@@ -796,7 +807,6 @@ def generate_100_scenarios():
         "count": None
     })
     
-    # Zmieniono mode na BLOKADA, poniewaz w WOLNE wejscie w sam srodek tylko bezpiecznie zamyka bramke zamiast wywalac alarm
     scenarios.append({"name": "INTRUSION w srodek bramki", "mode": "BLOKADA_LEWE_PRAWA", "seq": [CENTER_SECURITY_SENSOR], "log": LOG_ALARM_INTRUSION, "count": False})
     scenarios.append({"name": "ANTI-CRUSH", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR], "interrupt": {"after_index": 0, "sensor": CENTER_SECURITY_SENSOR}, "log": LOG_ALARM_SAFETY, "count": False})
 
