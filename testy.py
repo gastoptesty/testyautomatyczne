@@ -97,7 +97,7 @@ LOG_ALARM_INTRUSION  = "UNAUTHORIZED"
 LOG_ALARM_TAILGATING = "TAILGATING"
 LOG_MOTOR_ERROR    = "MOTOR ERROR"
 LOG_ALARM_NO_PERMIT  = "NO PERMITION"
-LOG_ALARM_SAFETY   = "SAFETY"
+LOG_ALARM_SAFETY   = "SECURITY_ZONE_STATE"  # ZAKTUALIZOWANE NA BAZIE ZRZUTU EKRANU
 LOG_TIMEOUT        = "TimeOUT"
 
 # =========================================================
@@ -775,8 +775,6 @@ def generate_100_scenarios():
     scenarios.append({"name": "KONTROLA ZLY KIERUNEK", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [RIGHT_SENSOR, RIGHT_SECURITY_SENSOR], "log": LOG_ALARM_INTRUSION, "count": False})
     scenarios.append({"name": "TIMEOUT: Nadano uprawnienie L", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [], "log": LOG_TIMEOUT, "count": False, "wait_time": 10})
     scenarios.append({"name": "WYCOFANIE: Uzytkownik wszedl i zrezygnowal", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR], "log": "", "count": False})
-    
-    # TUTAJ JEST FIX DLA PPOŻ - Ustawiamy 'count: None', aby zignorować to, że bramka ewakuacyjna słusznie zlicza przechodzących ludzi
     scenarios.append({"name": "ALARM PPOZ: Awaryjne otwarcie", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "ppoz 1\n", "seq": seq_lp, "log": "", "count": None, "custom_restore": "ppoz 0\n"})
     
     scenarios.append({"name": "USTERKA SENSORA CENTER", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "sensor {} 1\n".format(CENTER_SECURITY_SENSOR), "seq": [], "log": LOG_ALARM_SAFETY, "count": False, "custom_restore": "sensor {} 0\n".format(CENTER_SECURITY_SENSOR)})
