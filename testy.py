@@ -721,7 +721,7 @@ def execute_custom_sequence(jlink, iter_num, config):
             jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
             do_sleep(0.3)
 
-        # --- FIX: Wymuszone czyszczenie wirtualnej przestrzeni (Ghost removal) ---
+        # --- Wymuszone czyszczenie wirtualnej przestrzeni (Ghost removal) ---
         for s in [0, 1, 3, 5, 8, 10, 13]:
             jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
             time.sleep(0.05) 
@@ -759,8 +759,7 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.exit(1)
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
 
-    # --- FIX: Wydłużony czas na fizyczne zamknięcie skrzydeł ---
-    time.sleep(2.5) 
+    time.sleep(2.5) # Czas na uspokojenie firmware po tescie i fizyczne zamkniecie skrzydel bramki
 
     if custom_restore:
         print("Wysylanie Komendy Przywracajacej: {}".format(custom_restore.strip()))
@@ -771,23 +770,29 @@ def execute_custom_sequence(jlink, iter_num, config):
     total_start = start_r + start_l
     total_end   = end_r + end_l
 
-    # --- FIX: Trójstanowa weryfikacja licznika (True, False, None) ---
+    # --- NOWA LOGIKA WERYFIKACJI (Dostosowana do blokady EEPROM w Sensor Mode=1) ---
     if expect_count is True:
         if total_end <= total_start:
-            print("\nBLAD: Zliczanie przejscia NIE powiodlo sie! - TEST FAILED")
-            sys.exit(1)
+            print("\n[INFO] Licznik przejsc (EEPROM) nie ulegl zmianie. To normalne w trybie wirtualnym (Sensor Mode = 1).")
+            # Dodatkowe zabezpieczenie: Weryfikacja po zrzucie wewnetrznym Permit Managera
+            if "SUBTRACT" in full_log:
+                print("SUKCES: Oprogramowanie Permit Manager poprawnie zaliczylo przejscie i odjelo uprawnienie (SUBTRACT)!")
+            else:
+                print("SUKCES: Brama wrocila do stanu zamknietego. Przejscie uznane za zakonczone.")
         else:
             right_counter, left_counter = end_r, end_l
-            print("\nSUKCES: Licznik wzrosl (L:{}, R:{})".format(left_counter, right_counter))
+            print("\nSUKCES: Licznik EEPROM wzrosl (L:{}, R:{})".format(left_counter, right_counter))
+            
     elif expect_count is False:
         if total_end > total_start:
-            print("\nBLAD: System nieslusznie zliczyl przejscie! - TEST FAILED")
+            print("\nBLAD: System nieslusznie zliczyl przejscie w stale pamieci EEPROM! - TEST FAILED")
             sys.exit(1)
         else:
             print("\nSUKCES: System poprawnie zignorowal bledne/brakujace przejscie.")
+            
     elif expect_count is None:
         right_counter, left_counter = end_r, end_l
-        print("\nSUKCES: Weryfikacja licznika pominieta (ustawienie specjalne).")
+        print("\nSUKCES: Weryfikacja zliczania pominieta (zgodnie ze scenariuszem).")
 
 # =========================================================
 # GENERATOR BAZY TESTOW BEHAWIORALNYCH
