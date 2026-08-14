@@ -185,7 +185,25 @@ def add_permission(jlink, direction):
 def get_counters(jlink, timeout_sec=1.0):
     global right_counter, left_counter
 
+    drain_rtt(jlink, 4096)
+    
+    # Próba systemowego odczytu ID 2 (Lewy) i ID 3 (Prawy) z pamieci EEPROM
+    resp_l = rtt_get_param(jlink, 2, timeout_sec)
+    val_l = parse_get_response(resp_l, 2)
+    
+    resp_r = rtt_get_param(jlink, 3, timeout_sec)
+    val_r = parse_get_response(resp_r, 3)
+
+    if val_l is not None and val_r is not None:
+        left_counter = val_l
+        right_counter = val_r
+        return right_counter, left_counter
+
+    # Fallback na starą komendę jeśli odczyt ID zawiedzie
+    print("\n[WARN] get_counters: Nie mozna odczytac ID 2/3. Przechodze na komende 'counter'...")
+    drain_rtt(jlink, 4096)
     jlink.rtt_write(0, b'counter\n')
+    
     time.sleep(0.1)
     rtt = ''
     start_time_c = time.time()
@@ -196,21 +214,15 @@ def get_counters(jlink, timeout_sec=1.0):
             rtt += "".join([chr(c) for c in chunk])
         time.sleep(0.02)
 
-    pattern_right = r"right counter:(\d+)"
-    pattern_left  = r"left counter:(\d+)"
-
-    matches_r = re.findall(pattern_right, rtt)
-    matches_l = re.findall(pattern_left,  rtt)
+    matches_r = re.findall(r"(?i)right.*?(\d+)", rtt)
+    matches_l = re.findall(r"(?i)left.*?(\d+)", rtt)
 
     if matches_r and matches_l:
-        right_val = int(matches_r[-1])
-        left_val  = int(matches_l[-1])
-        right_counter = right_val
-        left_counter  = left_val
-        return right_val, left_val
+        right_counter = int(matches_r[-1])
+        left_counter = int(matches_l[-1])
+        return right_counter, left_counter
 
-    print("\n[WARN] get_counters: Failed to parse RTT response. "
-          "Using last known values (L:{}, R:{}).".format(left_counter, right_counter))
+    print("[WARN] get_counters: Zawiodly obie metody parsowania. Uzywam ostatnich wartosci (L:{}, R:{}).".format(left_counter, right_counter))
     return right_counter, left_counter
 
 # =========================================================
@@ -619,6 +631,11 @@ def test_find_optimal_torque(jlink):
                     time.sleep(0.3)
                 jlink.rtt_write(0, 'sensor {} 0\n'.format(seq_lp[i]).encode('utf-8'))
                 time.sleep(0.3)
+            
+            # Wymuszone zrzucenie stanow dla pewnosci
+            for s in [0, 1, 3, 5, 8, 10, 13]:
+                jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
+                time.sleep(0.05)
                 
             check_for_log_bool(jlink, LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
             time.sleep(1)
@@ -704,11 +721,15 @@ def execute_custom_sequence(jlink, iter_num, config):
             jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
             do_sleep(0.3)
 
+        # --- FIX: Wymuszone czyszczenie wirtualnej przestrzeni (Ghost removal) ---
+        for s in [0, 1, 3, 5, 8, 10, 13]:
+            jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
+            time.sleep(0.05) 
+
     if expected_log:
         found = False
         full_log = "".join(collected_logs)
         
-        # Funkcja sprawdzająca czy którykolwiek ze spodziewanych logów (lub jeden) wystąpił
         def check_log(expected, text):
             if isinstance(expected, list):
                 return any(e in text for e in expected)
@@ -738,7 +759,8 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.exit(1)
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
 
-    time.sleep(2.5) # Zwiekszono czas na uspokojenie firmware po tescie i fizyczne zamkniecie skrzydel bramki
+    # --- FIX: Wydłużony czas na fizyczne zamknięcie skrzydeł ---
+    time.sleep(2.5) 
 
     if custom_restore:
         print("Wysylanie Komendy Przywracajacej: {}".format(custom_restore.strip()))
@@ -749,6 +771,7 @@ def execute_custom_sequence(jlink, iter_num, config):
     total_start = start_r + start_l
     total_end   = end_r + end_l
 
+    # --- FIX: Trójstanowa weryfikacja licznika (True, False, None) ---
     if expect_count is True:
         if total_end <= total_start:
             print("\nBLAD: Zliczanie przejscia NIE powiodlo sie! - TEST FAILED")
@@ -796,7 +819,6 @@ def generate_100_scenarios():
         "count": None
     })
     
-    # Zmieniono mode na BLOKADA, poniewaz w WOLNE wejscie w sam srodek tylko bezpiecznie zamyka bramke zamiast wywalac alarm
     scenarios.append({"name": "INTRUSION w srodek bramki", "mode": "BLOKADA_LEWE_PRAWA", "seq": [CENTER_SECURITY_SENSOR], "log": LOG_ALARM_INTRUSION, "count": False})
     scenarios.append({"name": "ANTI-CRUSH", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR], "interrupt": {"after_index": 0, "sensor": CENTER_SECURITY_SENSOR}, "log": LOG_ALARM_SAFETY, "count": False})
 
