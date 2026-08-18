@@ -694,6 +694,11 @@ def execute_custom_sequence(jlink, iter_num, config):
     global right_counter, left_counter
     start_r, start_l = get_counters(jlink, 1)
 
+    # 1. Twardy i masywny reset strefy (aby upewnić się, że nie został żaden wirtualny duch z poprzednich testów)
+    for s in [0, 1, 3, 5, 8, 10, 13]:
+        jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
+    time.sleep(0.3)
+
     if permit:
         print("Nadawanie uprawnienia dla: {}".format(permit))
         add_permission(jlink, permit)
@@ -721,30 +726,26 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.stdout.flush()
 
     if seq:
-        jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[0]).encode('utf-8'))
-        do_sleep(0.3)
-
+        # 2. Brutalnie uproszczona sekwencja kroku. Nowy sensor zapala się na krótki ułamek sekundy (10 ms)
+        # przed tym jak zgaśnie stary, unikając podwójnych sygnałów i błędów UNAUTHORIZED
         for i in range(len(seq)):
+            jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[i]).encode('utf-8'))
+            do_sleep(0.01) # MIKRO OPÓŹNIENIE
+
+            if i > 0:
+                 jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i-1]).encode('utf-8'))
+                 
+            do_sleep(0.3) # Standardowy czas bycia na danym czujniku
+
             if interrupt_step and i == interrupt_step["after_index"]:
                 print("\n[!] ALARM: Symulacja naruszenia strefy {}!".format(interrupt_step['sensor']))
                 jlink.rtt_write(0, 'sensor {} 1\n'.format(interrupt_step["sensor"]).encode('utf-8'))
                 do_sleep(0.8)
                 jlink.rtt_write(0, 'sensor {} 0\n'.format(interrupt_step["sensor"]).encode('utf-8'))
 
-            if i + 1 < len(seq):
-                jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[i+1]).encode('utf-8'))
-                do_sleep(0.3)
-
-            jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
-            do_sleep(0.3)
-
-        used_sensors = set(seq)
-        if interrupt_step:
-            used_sensors.add(interrupt_step["sensor"])
-            
-        for s in used_sensors:
-            jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
-            time.sleep(0.1) 
+        # Zgaś ostatni czujnik w sekwencji
+        if len(seq) > 0:
+             jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[-1]).encode('utf-8'))
 
     if expected_log:
         found = False
@@ -759,7 +760,6 @@ def execute_custom_sequence(jlink, iter_num, config):
             found = True
         else:
             start_w = time.time()
-            last_sweep = time.time()
             while time.time() - start_w < wait_time:
                 chunk = jlink.rtt_read(0, 1024)
                 if chunk:
@@ -769,13 +769,7 @@ def execute_custom_sequence(jlink, iter_num, config):
                     if check_log(expected_log, full_log):
                         found = True
                         break
-                
-                if expected_log in [LOG_GATE_CLOSED, LOG_TIMEOUT] and (time.time() - last_sweep > 0.15):
-                    for s in [3, 5, 8]:
-                        jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
-                    last_sweep = time.time()
-                    
-                time.sleep(0.02)
+                time.sleep(0.05)
         
         if not found:
             print("\nBLAD: Oczekiwano logu '{}', ale go zabraklo! - TEST FAILED".format(expected_log))
@@ -786,11 +780,13 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.exit(1)
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
 
-    start_cool = time.time()
-    while time.time() - start_cool < 2.5:
-        for s in [3, 5, 8]:
-            jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
-        time.sleep(0.15)
+    # 3. Zwiększony czas oczekiwania (3 pełne sekundy) na zakończenie procesu i spokojne domknięcie bramki
+    time.sleep(3.0) 
+
+    # 4. Drugie masywne czyszczenie stref po fizycznym zamknięciu bramki
+    for s in [0, 1, 3, 5, 8, 10, 13]:
+        jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
+    time.sleep(0.2)
 
     if custom_restore:
         print("Wysylanie Komendy Przywracajacej: {}".format(custom_restore.strip()))
