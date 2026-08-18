@@ -47,22 +47,22 @@ PARAM_ALL = {
 }
 
 # Parametry specyficzne dla konkretnych bramek
-# ID 39 wraca na 0 (Tryb fizyczny) - Tryb symulacji (1) jest zbyt zbugowany i blokuje EEPROM
+# ID 39 na 1 -> TRYB WIRTUALNY JEST KONIECZNY, by ruch fizycznych skrzydel nie wyzwalal antyzgniecenia
 PARAM_SG = {
     27: 10, 
     32: 1,  
-    39: 0   
+    39: 1   
 }
 
 PARAM_GT = {
     27: 10, 
-    39: 0   
+    39: 1   
 }
 
 PARAM_SK = {
     27: 10, 
     32: 1,  
-    39: 0   
+    39: 1   
 }
 
 PARAM_BR = {
@@ -101,7 +101,6 @@ start_time = time.time()
 
 LOG_GATE_OPENED    = "GATE OPENED"
 LOG_GATE_CLOSED    = "GATE CLOSED"
-# Dodano 'DANGEROUS BEHAVIOR' do dopuszczalnych reakcji obronnych
 LOG_ALARM_INTRUSION  = ["INTRUSION", "UNAUTHORIZED", "SECURITY_ZONE_STATE", "DANGEROUS BEHAVIOR"]
 LOG_ALARM_TAILGATING = ["TAILGATING", "UNAUTHORIZED", "SECURITY_ZONE_STATE", "DANGEROUS BEHAVIOR"]
 LOG_MOTOR_ERROR    = "MOTOR ERROR"
@@ -196,7 +195,6 @@ def get_counters(jlink, timeout_sec=2.0):
 
     drain_rtt(jlink, 4096)
     
-    # 1. Próba pancerna - wywołanie samej komendy `counter` z mocnym Regexem
     jlink.rtt_write(0, b'counter\n')
     time.sleep(0.2)
     
@@ -222,7 +220,6 @@ def get_counters(jlink, timeout_sec=2.0):
         left_counter = int(matches_l[-1])
         return right_counter, left_counter
 
-    # 2. Jesli komenda counter nie zadzialala w uzytym buforze, sprobuj EEPROM
     print("\n[INFO] Odczyt komendy 'counter' nie powiodl sie. Probuje EEPROM...")
     resp_l = rtt_get_param(jlink, 2, timeout_sec)
     val_l = parse_get_response(resp_l, 2)
@@ -709,7 +706,7 @@ def execute_custom_sequence(jlink, iter_num, config):
         print("Ustawianie trybu: {}".format(req_mode))
         mode_set(jlink, req_mode)
 
-    # 1. Czyszczenie stref przed rozpoczęciem testu z większą precyzją
+    # 1. Czyszczenie stref przed rozpoczęciem testu
     for s in [0, 1, 3, 5, 8, 10, 13]:
         jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
     time.sleep(0.3)
@@ -744,7 +741,6 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.stdout.flush()
 
     if seq:
-        # 2. Powrót do naturalnego kroku człowieka 
         jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[0]).encode('utf-8'))
         do_sleep(0.3)
 
@@ -757,7 +753,7 @@ def execute_custom_sequence(jlink, iter_num, config):
 
             if i + 1 < len(seq):
                 jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[i+1]).encode('utf-8'))
-                do_sleep(0.1) # Lekkie nałożenie nóg człowieka (dwie strefy na raz)
+                do_sleep(0.1)
 
             jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
             do_sleep(0.3)
@@ -795,14 +791,18 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.exit(1)
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
 
-    time.sleep(2.5) # Czas na uspokojenie firmware po tescie i fizyczne zamkniecie skrzydel bramki
+    time.sleep(2.5) 
 
     # 3. Zamiatanie śmieci post-testowych po zamknięciu skrzydeł
     for s in [0, 1, 3, 5, 8, 10, 13]:
         jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
     
-    # 4. NOWOŚĆ: Dodany czas oddechu po wyczyszczeniu RAM, aby EEPROM zdążył zapisać wynik i dał się odczytać 
-    time.sleep(1.5) 
+    # 4. Wyssanie ostatnich logow z RAM zeby miec pewnosc ze zlapiemy opozniony komunikat SUBTRACT
+    time.sleep(0.5)
+    rem_logs = drain_rtt(jlink, 4096)
+    if rem_logs:
+        full_log += rem_logs
+        filter_and_print_log(rem_logs)
 
     if custom_restore:
         print("Wysylanie Komendy Przywracajacej: {}".format(custom_restore.strip()))
@@ -813,10 +813,15 @@ def execute_custom_sequence(jlink, iter_num, config):
     total_start = start_r + start_l
     total_end   = end_r + end_l
 
+    # --- ZAAWANSOWANA WERYFIKACJA LICZNIKA W TRYBIE SYMULACJI (EEPROM OFF) ---
     if expect_count is True:
         if total_end <= total_start:
-            print("\nBLAD: Zliczanie przejscia w EEPROM NIE powiodlo sie! - TEST FAILED")
-            sys.exit(1)
+            print("\n[INFO] Licznik EEPROM zablokowany (Sensor Mode = 1). Weryfikacja w RAM...")
+            if "SUBTRACT" in full_log:
+                print("SUKCES: Permit Manager zaliczyl przejscie (Commit access SUBTRACT).")
+            else:
+                print("\nBLAD: Zliczanie przejscia NIE powiodlo sie (Brak SUBTRACT)! - TEST FAILED")
+                sys.exit(1)
         else:
             right_counter, left_counter = end_r, end_l
             print("\nSUKCES: Licznik EEPROM wzrosl (L:{}, R:{})".format(left_counter, right_counter))
@@ -826,6 +831,9 @@ def execute_custom_sequence(jlink, iter_num, config):
             print("\nBLAD: System nieslusznie zliczyl przejscie w stale pamieci EEPROM! - TEST FAILED")
             sys.exit(1)
         else:
+            if "SUBTRACT" in full_log:
+                print("\nBLAD: System nieslusznie zliczyl przejscie w RAM (SUBTRACT)! - TEST FAILED")
+                sys.exit(1)
             print("\nSUKCES: System poprawnie zignorowal bledne/brakujace przejscie.")
             
     elif expect_count is None:
