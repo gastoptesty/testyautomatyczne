@@ -46,8 +46,8 @@ PARAM_ALL = {
     40: 2    
 }
 
-# Parametry specyficzne dla bramek
-# ID 39 wraca na 1 - Tryb Wirtualny jest konieczny, my będziemy tlumic fizyke ramion aktywnie
+# Parametry specyficzne dla konkretnych bramek
+# ID 39 na 1 -> TRYB WIRTUALNY JEST KONIECZNY do HIL
 PARAM_SG = {
     27: 10, 
     32: 1,  
@@ -116,7 +116,7 @@ def play_beep(freq, duration):
         import winsound
         winsound.Beep(freq, duration)
 
-def drain_rtt(jlink, max_bytes=4096):
+def drain_rtt(jlink, max_bytes=8192):
     try:
         chunk = jlink.rtt_read(0, max_bytes)
         if chunk:
@@ -193,7 +193,7 @@ def add_permission(jlink, direction):
 def get_counters(jlink, timeout_sec=2.0):
     global right_counter, left_counter
 
-    drain_rtt(jlink, 4096)
+    drain_rtt(jlink, 8192)
     jlink.rtt_write(0, b'counter\n')
     
     time.sleep(0.1)
@@ -219,19 +219,7 @@ def get_counters(jlink, timeout_sec=2.0):
         left_counter = int(matches_l[-1])
         return right_counter, left_counter
 
-    print("\n[INFO] Odczyt komendy 'counter' nie powiodl sie. Probuje EEPROM...")
-    resp_l = rtt_get_param(jlink, 2, timeout_sec)
-    val_l = parse_get_response(resp_l, 2)
-    
-    resp_r = rtt_get_param(jlink, 3, timeout_sec)
-    val_r = parse_get_response(resp_r, 3)
-
-    if val_l is not None and val_r is not None:
-        left_counter = val_l
-        right_counter = val_r
-        return right_counter, left_counter
-
-    print("\n[WARN] get_counters: Blad podwojnego odczytu! Uzywam ostatnich wartosci (L:{}, R:{}).".format(left_counter, right_counter))
+    print("\n[WARN] get_counters: Nie udalo sie odnalezc scislej frazy licznika! Uzywam ostatnich wartosci (L:{}, R:{}).".format(left_counter, right_counter))
     return right_counter, left_counter
 
 # =========================================================
@@ -239,21 +227,22 @@ def get_counters(jlink, timeout_sec=2.0):
 # =========================================================
 
 def parse_get_response(resp, idx):
-    clean = re.sub(r'(?i).*?get\s+{}\s*[\r\n]+'.format(idx), '', resp)
-    lines = [l.strip() for l in clean.split('\n') if l.strip()]
+    lines = [l.strip() for l in resp.split('\n') if l.strip()]
     
     for line in lines:
-        if 'manager' in line.lower() or 'alarm' in line.lower() or 'set' in line.lower():
+        # Odporność na śmieci z logów - ignorujemy wszystko co jest ewidentnie logiem zachowania
+        if any(x in line for x in ['manager', 'alarm', 'set', '>>', 'Feedback', 'INFO', 'ERROR', 'SENSOR', 'TimeOUT']):
             continue
             
-        match = re.search(r'[=:]\s*(-?\d+)', line)
+        # Szukamy stricte formatu typu "2: 45" lub "ID 2 = 45"
+        match = re.search(r'(?:^|\s)' + str(idx) + r'\s*[:=]\s*(-?\d+)', line)
         if match:
             return int(match.group(1))
             
-        clean_line = re.sub(r'\[.*?\]|\(.*?\)', '', line)
-        digits = re.findall(r'-?\d+', clean_line)
-        if digits:
-            return int(digits[-1])
+        # Awaryjnie, jesli linijka zawiera sama liczbe (bez innych tekstow)
+        match = re.search(r'^[^\d]*(-?\d+)$', line)
+        if match and len(line) < 15: # Zabezpieczenie przed pobraniem wielkiego timestampu
+            return int(match.group(1))
             
     return None
 
@@ -722,7 +711,10 @@ def execute_custom_sequence(jlink, iter_num, config):
         jlink.rtt_write(0, custom_trigger.encode('utf-8'))
         time.sleep(0.5)
 
+    # POPRAWKA 1: Bezpieczna, globalna inicjalizacja full_log przed warunkiem
+    full_log = ""
     collected_logs = []
+    
     def do_sleep(dur):
         start_t = time.time()
         while time.time() - start_t < dur:
@@ -757,11 +749,9 @@ def execute_custom_sequence(jlink, iter_num, config):
             jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
             do_sleep(0.3)
 
-    # 2. INICJALIZACJA FULL_LOG (FIX Błędu UnboundLocalError dla pustych expected_logs)
-    full_log = "".join(collected_logs)
-
     if expected_log:
         found = False
+        full_log = "".join(collected_logs) # Aktualizujemy log biezacymi zapisami
         
         def check_log(expected, text):
             if isinstance(expected, list):
@@ -772,26 +762,16 @@ def execute_custom_sequence(jlink, iter_num, config):
             found = True
         else:
             start_w = time.time()
-            last_sweep = time.time()
             while time.time() - start_w < wait_time:
                 chunk = jlink.rtt_read(0, 1024)
                 if chunk:
                     text = "".join([chr(c) for c in chunk])
                     filter_and_print_log(text)
                     full_log += text
-                    collected_logs.append(text)
                     if check_log(expected_log, full_log):
                         found = True
                         break
-                
-                # --- AKTYWNE TLUMIENIE FIZYKI (Active Hardware Suppression) ---
-                # Fizyczne ramiona uderzaja w strefy czujnikow srodkowych mimo ID39=1, zamykamy je na sztywno
-                if expected_log in [LOG_GATE_CLOSED, LOG_TIMEOUT] and (time.time() - last_sweep > 0.15):
-                    for s in [2, 3, 4, 5, 8]:
-                        jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
-                    last_sweep = time.time()
-
-                time.sleep(0.02)
+                time.sleep(0.05)
         
         if not found:
             print("\nBLAD: Oczekiwano logu '{}', ale go zabraklo! - TEST FAILED".format(expected_log))
@@ -802,17 +782,12 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.exit(1)
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
 
-    # --- CHŁODZENIE I TŁUMIENIE FIZYKI ZAMYKAJĄCYCH SIĘ RAMION ---
-    start_cool = time.time()
-    while time.time() - start_cool < 2.5:
-        for s in [2, 3, 4, 5, 8]:
-            jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
-        time.sleep(0.15)
-        
-    # Standardowe czyszczenie po tescie
+    time.sleep(2.5) # Czas na uspokojenie firmware po tescie i fizyczne zamkniecie skrzydel bramki
+
+    # Czyszczenie post-testowe
     for s in [0, 1, 3, 5, 8, 10, 13]:
         jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
-        
+    
     # Wyssanie resztek logów z RAM przed weryfikacja
     time.sleep(0.5)
     rem_logs = drain_rtt(jlink, 4096)
@@ -829,7 +804,7 @@ def execute_custom_sequence(jlink, iter_num, config):
     total_start = start_r + start_l
     total_end   = end_r + end_l
 
-    # --- ZAAWANSOWANA WERYFIKACJA LICZNIKA ---
+    # --- ZAAWANSOWANA WERYFIKACJA LICZNIKA W TRYBIE SYMULACJI ---
     if expect_count is True:
         if total_end <= total_start:
             print("\n[INFO] Licznik przejsc z komendy 'counter' nie ulegl zmianie. To naturalne w trybie wirtualnym (Sensor Mode = 1).")
