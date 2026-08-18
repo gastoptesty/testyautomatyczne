@@ -101,6 +101,7 @@ start_time = time.time()
 
 LOG_GATE_OPENED    = "GATE OPENED"
 LOG_GATE_CLOSED    = "GATE CLOSED"
+# Dodano 'DANGEROUS BEHAVIOR' do dopuszczalnych reakcji obronnych
 LOG_ALARM_INTRUSION  = ["INTRUSION", "UNAUTHORIZED", "SECURITY_ZONE_STATE", "DANGEROUS BEHAVIOR"]
 LOG_ALARM_TAILGATING = ["TAILGATING", "UNAUTHORIZED", "SECURITY_ZONE_STATE", "DANGEROUS BEHAVIOR"]
 LOG_MOTOR_ERROR    = "MOTOR ERROR"
@@ -190,6 +191,53 @@ def add_permission(jlink, direction):
         jlink.rtt_write(0, b'add_r\n')
     time.sleep(0.2)
 
+def get_counters(jlink, timeout_sec=2.0):
+    global right_counter, left_counter
+
+    drain_rtt(jlink, 4096)
+    
+    # 1. Próba pancerna - wywołanie samej komendy `counter` z mocnym Regexem
+    jlink.rtt_write(0, b'counter\n')
+    time.sleep(0.2)
+    
+    rtt = ''
+    start_time_c = time.time()
+    
+    while time.time() - start_time_c < timeout_sec:
+        chunk = jlink.rtt_read(0, 1024)
+        if chunk:
+            rtt += "".join([chr(c) for c in chunk])
+            if "right counter" in rtt.lower() and "left counter" in rtt.lower():
+                time.sleep(0.05)
+                chunk = jlink.rtt_read(0, 1024)
+                if chunk: rtt += "".join([chr(c) for c in chunk])
+                break
+        time.sleep(0.02)
+
+    matches_r = re.findall(r"(?i)right\s+counter\s*:\s*(\d+)", rtt)
+    matches_l = re.findall(r"(?i)left\s+counter\s*:\s*(\d+)", rtt)
+
+    if matches_r and matches_l:
+        right_counter = int(matches_r[-1])
+        left_counter = int(matches_l[-1])
+        return right_counter, left_counter
+
+    # 2. Jesli komenda counter nie zadzialala w uzytym buforze, sprobuj EEPROM
+    print("\n[INFO] Odczyt komendy 'counter' nie powiodl sie. Probuje EEPROM...")
+    resp_l = rtt_get_param(jlink, 2, timeout_sec)
+    val_l = parse_get_response(resp_l, 2)
+    
+    resp_r = rtt_get_param(jlink, 3, timeout_sec)
+    val_r = parse_get_response(resp_r, 3)
+
+    if val_l is not None and val_r is not None:
+        left_counter = val_l
+        right_counter = val_r
+        return right_counter, left_counter
+
+    print("\n[WARN] get_counters: Blad podwojnego odczytu! Uzywam ostatnich wartosci (L:{}, R:{}).".format(left_counter, right_counter))
+    return right_counter, left_counter
+
 # =========================================================
 # FUNKCJE RTT (GET / SET / VERIFY)
 # =========================================================
@@ -230,27 +278,6 @@ def rtt_get_param(jlink, idx, timeout_sec=1.5):
                 break
         time.sleep(0.02)
     return rtt
-
-def get_counters(jlink, timeout_sec=1.5):
-    global right_counter, left_counter
-
-    drain_rtt(jlink, 4096)
-    
-    # Powrót do twardego odczytu z EEPROM (teraz zadziała, bo Sensor Mode=0)
-    resp_l = rtt_get_param(jlink, 2, timeout_sec)
-    val_l = parse_get_response(resp_l, 2)
-    
-    resp_r = rtt_get_param(jlink, 3, timeout_sec)
-    val_r = parse_get_response(resp_r, 3)
-
-    if val_l is not None and val_r is not None:
-        left_counter = val_l
-        right_counter = val_r
-        return right_counter, left_counter
-
-    print("\n[WARN] get_counters: Blad odczytu licznika z EEPROM! Uzywam ostatnich wartosci (L:{}, R:{}).".format(left_counter, right_counter))
-    return right_counter, left_counter
-
 
 def rtt_set_and_verify(jlink, idx, val, is_remote=False):
     monitor_window = 1.5 if is_remote else 1.0 
@@ -682,13 +709,13 @@ def execute_custom_sequence(jlink, iter_num, config):
         print("Ustawianie trybu: {}".format(req_mode))
         mode_set(jlink, req_mode)
 
-    # 1. Czyszczenie stref "w ciemno" przed rozpoczęciem testu
+    # 1. Czyszczenie stref przed rozpoczęciem testu z większą precyzją
     for s in [0, 1, 3, 5, 8, 10, 13]:
         jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
     time.sleep(0.3)
 
     global right_counter, left_counter
-    start_r, start_l = get_counters(jlink, 1)
+    start_r, start_l = get_counters(jlink, 1.5)
 
     if permit:
         print("Nadawanie uprawnienia dla: {}".format(permit))
@@ -717,7 +744,7 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.stdout.flush()
 
     if seq:
-        # 2. Powrót do naturalnego kroku człowieka (włącz nowy -> poczekaj -> wyłącz stary)
+        # 2. Powrót do naturalnego kroku człowieka 
         jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[0]).encode('utf-8'))
         do_sleep(0.3)
 
@@ -773,18 +800,19 @@ def execute_custom_sequence(jlink, iter_num, config):
     # 3. Zamiatanie śmieci post-testowych po zamknięciu skrzydeł
     for s in [0, 1, 3, 5, 8, 10, 13]:
         jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
-    time.sleep(0.2) 
+    
+    # 4. NOWOŚĆ: Dodany czas oddechu po wyczyszczeniu RAM, aby EEPROM zdążył zapisać wynik i dał się odczytać 
+    time.sleep(1.5) 
 
     if custom_restore:
         print("Wysylanie Komendy Przywracajacej: {}".format(custom_restore.strip()))
         jlink.rtt_write(0, custom_restore.encode('utf-8'))
         time.sleep(1.0)
 
-    end_r, end_l = get_counters(jlink, 1)
+    end_r, end_l = get_counters(jlink, 2.0)
     total_start = start_r + start_l
     total_end   = end_r + end_l
 
-    # 4. Standardowa Weryfikacja Licznika (Przy ID 39=0, EEPROM dziala normalnie)
     if expect_count is True:
         if total_end <= total_start:
             print("\nBLAD: Zliczanie przejscia w EEPROM NIE powiodlo sie! - TEST FAILED")
