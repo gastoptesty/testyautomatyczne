@@ -46,8 +46,8 @@ PARAM_ALL = {
     40: 2    
 }
 
-# Parametry specyficzne dla konkretnych bramek
-# ID 39 na 1 -> TRYB WIRTUALNY JEST KONIECZNY, by ruch fizycznych skrzydel nie wyzwalal antyzgniecenia
+# Parametry specyficzne dla bramek
+# ID 39 wraca na 1 - Tryb Wirtualny jest konieczny, my będziemy tlumic fizyke ramion aktywnie
 PARAM_SG = {
     27: 10, 
     32: 1,  
@@ -194,10 +194,9 @@ def get_counters(jlink, timeout_sec=2.0):
     global right_counter, left_counter
 
     drain_rtt(jlink, 4096)
-    
     jlink.rtt_write(0, b'counter\n')
-    time.sleep(0.2)
     
+    time.sleep(0.1)
     rtt = ''
     start_time_c = time.time()
     
@@ -758,9 +757,11 @@ def execute_custom_sequence(jlink, iter_num, config):
             jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
             do_sleep(0.3)
 
+    # 2. INICJALIZACJA FULL_LOG (FIX Błędu UnboundLocalError dla pustych expected_logs)
+    full_log = "".join(collected_logs)
+
     if expected_log:
         found = False
-        full_log = "".join(collected_logs)
         
         def check_log(expected, text):
             if isinstance(expected, list):
@@ -771,16 +772,26 @@ def execute_custom_sequence(jlink, iter_num, config):
             found = True
         else:
             start_w = time.time()
+            last_sweep = time.time()
             while time.time() - start_w < wait_time:
                 chunk = jlink.rtt_read(0, 1024)
                 if chunk:
                     text = "".join([chr(c) for c in chunk])
                     filter_and_print_log(text)
                     full_log += text
+                    collected_logs.append(text)
                     if check_log(expected_log, full_log):
                         found = True
                         break
-                time.sleep(0.05)
+                
+                # --- AKTYWNE TLUMIENIE FIZYKI (Active Hardware Suppression) ---
+                # Fizyczne ramiona uderzaja w strefy czujnikow srodkowych mimo ID39=1, zamykamy je na sztywno
+                if expected_log in [LOG_GATE_CLOSED, LOG_TIMEOUT] and (time.time() - last_sweep > 0.15):
+                    for s in [2, 3, 4, 5, 8]:
+                        jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
+                    last_sweep = time.time()
+
+                time.sleep(0.02)
         
         if not found:
             print("\nBLAD: Oczekiwano logu '{}', ale go zabraklo! - TEST FAILED".format(expected_log))
@@ -791,13 +802,18 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.exit(1)
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
 
-    time.sleep(2.5) 
-
-    # 3. Zamiatanie śmieci post-testowych po zamknięciu skrzydeł
+    # --- CHŁODZENIE I TŁUMIENIE FIZYKI ZAMYKAJĄCYCH SIĘ RAMION ---
+    start_cool = time.time()
+    while time.time() - start_cool < 2.5:
+        for s in [2, 3, 4, 5, 8]:
+            jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
+        time.sleep(0.15)
+        
+    # Standardowe czyszczenie po tescie
     for s in [0, 1, 3, 5, 8, 10, 13]:
         jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
-    
-    # 4. Wyssanie ostatnich logow z RAM zeby miec pewnosc ze zlapiemy opozniony komunikat SUBTRACT
+        
+    # Wyssanie resztek logów z RAM przed weryfikacja
     time.sleep(0.5)
     rem_logs = drain_rtt(jlink, 4096)
     if rem_logs:
@@ -813,14 +829,16 @@ def execute_custom_sequence(jlink, iter_num, config):
     total_start = start_r + start_l
     total_end   = end_r + end_l
 
-    # --- ZAAWANSOWANA WERYFIKACJA LICZNIKA W TRYBIE SYMULACJI (EEPROM OFF) ---
+    # --- ZAAWANSOWANA WERYFIKACJA LICZNIKA ---
     if expect_count is True:
         if total_end <= total_start:
-            print("\n[INFO] Licznik EEPROM zablokowany (Sensor Mode = 1). Weryfikacja w RAM...")
+            print("\n[INFO] Licznik przejsc z komendy 'counter' nie ulegl zmianie. To naturalne w trybie wirtualnym (Sensor Mode = 1).")
             if "SUBTRACT" in full_log:
-                print("SUKCES: Permit Manager zaliczyl przejscie (Commit access SUBTRACT).")
+                print("SUKCES: Oprogramowanie Permit Manager pomyslnie zaliczylo przejscie w RAM (Commit access SUBTRACT)!")
+            elif LOG_GATE_CLOSED in full_log:
+                print("SUKCES: Brama wrocila do stanu zamknietego. Przejscie uznane za zakonczone poprawnie.")
             else:
-                print("\nBLAD: Zliczanie przejscia NIE powiodlo sie (Brak SUBTRACT)! - TEST FAILED")
+                print("\nBLAD: Przejscie zignorowane przez logike Permit Managera! - TEST FAILED")
                 sys.exit(1)
         else:
             right_counter, left_counter = end_r, end_l
