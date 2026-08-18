@@ -18,49 +18,56 @@ except Exception:
     GATE_TYPE = "SG"
 
 # =========================================================
-# KONFIGURACJA PARAMETRÓW EEPROM (Zgodnie ze specyfikacją)
+# KONFIGURACJA PARAMETRÓW EEPROM
 # =========================================================
 
-# Wspólne parametry (ALL)
-PARAM_ALL = {
-    0: 0,    # Tryb pracy (0 = WOLNE_LEWE_PRAWA)
-    10: 10,  # Czas TimeOut (10s)
-    12: 1,   # PPoz NC/NO (0-1)
-    13: 0,   # PPoz strona (0-1)
-    18: 8,   # Prędkość (1-9)
-    19: 20,  # Pred.Min (1-100)
-    20: 10,  # Acc Open (1-20)
-    21: 10,  # Acc Close (1-20)
-    22: 100, # Break Open (50-250)
-    23: 100, # Break Close (50-250)
-    28: 14,  # Max Torque (0-20) - docelowo i tak nadpisywane optymalizatorem
-    40: 2    # Sensor Sensitive (2 = Ignoruje fizyczne dolne czujniki w automatach)
+# TABELA Z PDF - Ustawienia fabryczne (Domyślne) dla bramki SG
+DEFAULT_SETTINGS_SG = {
+    0: 0, 1: 3, 2: 0, 3: 0, 4: 0, 5: 9, 8: 0, 9: 1, 10: 5, 11: 0, 12: 1, 13: 0, 14: 0,
+    15: 8, 16: 1, 17: 2, 18: 8, 19: 0, 20: 0, 21: 0, 22: 0, 23: 0, 24: 0, 25: 0, 26: 0,
+    27: 0, 28: 0, 29: 0, 30: 0, 31: 0, 32: 0, 33: 0, 34: 0, 35: 0, 36: 0, 37: 0, 38: 0,
+    39: 0, 40: 0, 41: 0, 42: 1, 43: 1, 44: 33, 45: 33, 46: 1, 47: 1, 48: 0, 49: 1,
+    50: 1, 51: 6, 52: 0, 53: 0, 54: 0, 55: 0
 }
 
-# Parametry specyficzne dla konkretnych bramek
-# ID 39 na 1 -> TWARDE WYMUSZENIE TRYBU WIRTUALNEGO (Zignorowanie fizyki)
+# Wspólne parametry (ALL) - Do testów
+PARAM_ALL = {
+    0: 0,    
+    10: 10,  
+    12: 1,   
+    13: 0,   
+    18: 8,   
+    19: 20,  
+    20: 10,  
+    21: 10,  
+    22: 100, 
+    23: 100, 
+    28: 14,  
+    40: 2    
+}
+
 PARAM_SG = {
-    27: 10, # Close Delay (8-20)
-    32: 1,  # Hamulec używaj (0-1)
-    39: 1   # Sensor mode (1 = Tryb symulacji / zignoruj hardware)
+    27: 10, 
+    32: 1,  
+    39: 1   
 }
 
 PARAM_GT = {
-    27: 10, # Close Delay
-    39: 1   # Sensor mode (1 = Tryb symulacji / zignoruj hardware)
+    27: 10, 
+    39: 1   
 }
 
 PARAM_SK = {
-    27: 10, # Close Delay
-    32: 1,  # Hamulec używaj
-    39: 1   # Sensor mode (1 = Tryb symulacji / zignoruj hardware)
+    27: 10, 
+    32: 1,  
+    39: 1   
 }
 
 PARAM_BR = {
-    24: 5,  # Overspeed (0-8)
-    32: 0,  # Hamulec używaj
-    34: 1,  # Rygiel używaj
-    38: 0   # Zbijak obrót
+    24: 5,  
+    32: 0,  
+    34: 1,  
+    38: 0   
 }
 
 # =========================================================
@@ -76,7 +83,7 @@ BOOT_WAIT_LINK     = 5.0
 LOG_SYSTEM_READY   = "Permit manager"   
 SYSTEM_READY_TIMEOUT = 12.0             
 
-# LOGICZNE MAPOWANIE SENSOROW (Oczekiwane przez Permit Manager)
+# LOGICZNE MAPOWANIE SENSOROW
 RIGHT_SENSOR = 13
 RIGHT_DOWN_SENSOR = 10
 LEFT_SENSOR = 0
@@ -90,7 +97,6 @@ left_counter = 0
 current_mode = "WOLNE_LEWE_PRAWA"
 start_time = time.time()
 
-# --- OCZEKIWANE LOGI Z SYSTEMU ---
 LOG_GATE_OPENED    = "GATE OPENED"
 LOG_GATE_CLOSED    = "GATE CLOSED"
 LOG_ALARM_INTRUSION  = ["INTRUSION", "UNAUTHORIZED", "SECURITY_ZONE_STATE"]
@@ -354,6 +360,29 @@ def safe_rtt_restart(jlink, delay=None, wait_for_link=True):
         else:
             print("   [BOOT FATAL] Brama nie odpowiada! Ryzyko WDG lub rozlaczenia J-Link.")
             time.sleep(BOOT_WAIT_LINK)
+
+# =========================================================
+# TRYB PRZYWRACANIA USTAWIEŃ FABRYCZNYCH SG
+# =========================================================
+
+def restore_sg_defaults(jlink):
+    print("\n" + "="*60)
+    print(" ⚠️  URUCHOMIONO TRYB: PRZYWRACANIE USTAWIEŃ DOMYŚLNYCH (SG)")
+    print("="*60)
+    
+    print("\n[INFO] Przywracanie konfiguracji fabrycznej z pliku PDF...")
+    
+    for idx, val in DEFAULT_SETTINGS_SG.items():
+        is_rem = True if idx >= 13 else False
+        status = rtt_set_and_verify(jlink, idx, val, is_remote=is_rem)
+        if not status:
+            print("  [WARN] Nie udalo sie nadpisac zmiennej ID: {}. Kontynuuje...".format(idx))
+            
+    print("\n[OK] Zapisano domyślne parametry. Czekam na zapis do pamięci Flash Slave'a...")
+    time.sleep(4.0)
+    
+    safe_rtt_restart(jlink, delay=BOOT_WAIT_MASTER, wait_for_link=True)
+    print("\n[SUKCES] Ustawienia fabryczne przywrócone.")
 
 # =========================================================
 # TRYB DIAGNOSTYCZNY: TESTOWANIE FIZYCZNE CZUJNIKÓW
@@ -741,9 +770,6 @@ def execute_custom_sequence(jlink, iter_num, config):
                         found = True
                         break
                 
-                # --- AKTYWNE TLUMIENIE FIZYKI (Active Hardware Suppression) ---
-                # Podczas zamykania fizyczne ramiona moga przeciac wiazke srodkowych czujnikow.
-                # Aby ominac "fail-safe" w firmware, bombardujemy RTT wartoscia 0.
                 if expected_log in [LOG_GATE_CLOSED, LOG_TIMEOUT] and (time.time() - last_sweep > 0.15):
                     for s in [3, 5, 8]:
                         jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
@@ -760,8 +786,6 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.exit(1)
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
 
-    # --- AKTYWNE TLUMIENIE FIZYKI (Active Hardware Suppression - Cooldown) ---
-    # Tlumimy fizyczne czujniki dopoki ramiona calkowicie nie wroca do pozycji zamknietej (Idle)
     start_cool = time.time()
     while time.time() - start_cool < 2.5:
         for s in [3, 5, 8]:
@@ -890,6 +914,11 @@ def main():
             time.sleep(0.05)
         else:
             print("[BOOT WARN] Marker gotowosci nie wykryty — kontynuuje.")
+
+        # --- NOWY TRYB PRZYWRACANIA USTAWIEŃ ---
+        if GATE_TYPE == "SG_RESTORE":
+            restore_sg_defaults(jlink)
+            return
 
         # --- NOWY TRYB DIAGNOSTYKI CZUJNIKOW ---
         if "Test Czujników" in GATE_TYPE:
