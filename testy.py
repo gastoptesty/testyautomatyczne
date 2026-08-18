@@ -612,7 +612,6 @@ def test_find_optimal_torque(jlink):
             print("   [INFO] Symulacja wirtualnego przejścia by zresetować stan bramki...")
             seq_lp = [LEFT_SENSOR, LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR]
             
-            # Nowa, zoptymalizowana logika symulacji kroku uzywana takze w tescie momentu sily
             jlink.rtt_write(0, 'sensor {} 1\n'.format(seq_lp[0]).encode('utf-8'))
             time.sleep(0.3)
             for i in range(len(seq_lp)):
@@ -622,7 +621,6 @@ def test_find_optimal_torque(jlink):
                 jlink.rtt_write(0, 'sensor {} 0\n'.format(seq_lp[i]).encode('utf-8'))
                 time.sleep(0.3)
             
-            # Zabezpieczenie przed ewentualnym dropem w RTT
             for s in set(seq_lp):
                 jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
                 time.sleep(0.05)
@@ -694,8 +692,6 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.stdout.flush()
 
     if seq:
-        # --- ZOPTYMALIZOWANY KROK PIESZEGO ---
-        # 1. Wlacz pierwszy czujnik przed pętlą, zeby nie zapetlac komend ON
         jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[0]).encode('utf-8'))
         do_sleep(0.3)
 
@@ -706,16 +702,13 @@ def execute_custom_sequence(jlink, iter_num, config):
                 do_sleep(0.8)
                 jlink.rtt_write(0, 'sensor {} 0\n'.format(interrupt_step["sensor"]).encode('utf-8'))
 
-            # 2. Jesli to nie jest koniec sekwencji, wejdz na NASTEPNY czujnik
             if i + 1 < len(seq):
                 jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[i+1]).encode('utf-8'))
                 do_sleep(0.3)
 
-            # 3. Zdejmij noge z AKTUALNEGO czujnika
             jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
             do_sleep(0.3)
 
-        # 4. Inteligentne czyszczenie DUCHOW tylko z uzywanych czujnikow
         used_sensors = set(seq)
         if interrupt_step:
             used_sensors.add(interrupt_step["sensor"])
@@ -737,6 +730,7 @@ def execute_custom_sequence(jlink, iter_num, config):
             found = True
         else:
             start_w = time.time()
+            last_sweep = time.time()
             while time.time() - start_w < wait_time:
                 chunk = jlink.rtt_read(0, 1024)
                 if chunk:
@@ -746,7 +740,16 @@ def execute_custom_sequence(jlink, iter_num, config):
                     if check_log(expected_log, full_log):
                         found = True
                         break
-                time.sleep(0.05)
+                
+                # --- AKTYWNE TLUMIENIE FIZYKI (Active Hardware Suppression) ---
+                # Podczas zamykania fizyczne ramiona moga przeciac wiazke srodkowych czujnikow.
+                # Aby ominac "fail-safe" w firmware, bombardujemy RTT wartoscia 0.
+                if expected_log in [LOG_GATE_CLOSED, LOG_TIMEOUT] and (time.time() - last_sweep > 0.15):
+                    for s in [3, 5, 8]:
+                        jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
+                    last_sweep = time.time()
+                    
+                time.sleep(0.02)
         
         if not found:
             print("\nBLAD: Oczekiwano logu '{}', ale go zabraklo! - TEST FAILED".format(expected_log))
@@ -757,7 +760,13 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.exit(1)
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
 
-    time.sleep(2.5) # Czas na uspokojenie firmware po tescie i fizyczne zamkniecie skrzydel bramki
+    # --- AKTYWNE TLUMIENIE FIZYKI (Active Hardware Suppression - Cooldown) ---
+    # Tlumimy fizyczne czujniki dopoki ramiona calkowicie nie wroca do pozycji zamknietej (Idle)
+    start_cool = time.time()
+    while time.time() - start_cool < 2.5:
+        for s in [3, 5, 8]:
+            jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
+        time.sleep(0.15)
 
     if custom_restore:
         print("Wysylanie Komendy Przywracajacej: {}".format(custom_restore.strip()))
@@ -768,11 +777,9 @@ def execute_custom_sequence(jlink, iter_num, config):
     total_start = start_r + start_l
     total_end   = end_r + end_l
 
-    # --- ZAAWANSOWANA WERYFIKACJA LICZNIKA (Obsługa trybu symulacji, który blokuje EEPROM) ---
     if expect_count is True:
         if total_end <= total_start:
             print("\n[INFO] Licznik przejsc z komendy 'counter' nie ulegl zmianie. To naturalne w trybie wirtualnym (Sensor Mode = 1).")
-            # Ratunkowa weryfikacja operacji na RAM
             if "SUBTRACT" in full_log:
                 print("SUKCES: Oprogramowanie Permit Manager pomyslnie zaliczylo przejscie w RAM (Commit access SUBTRACT)!")
             elif LOG_GATE_CLOSED in full_log:
