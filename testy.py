@@ -18,7 +18,7 @@ except Exception:
     GATE_TYPE = "SG"
 
 # =========================================================
-# KONFIGURACJA PARAMETRÓW EEPROM
+# KONFIGURACJA PARAMETRÓW EEPROM (Zgodnie ze specyfikacją)
 # =========================================================
 
 # TABELA Z PDF - Ustawienia fabryczne (Domyślne) dla bramki SG
@@ -30,46 +30,46 @@ DEFAULT_SETTINGS_SG = {
     50: 1, 51: 6, 52: 0, 53: 0, 54: 0, 55: 0
 }
 
-# Wspólne parametry (ALL) - Do testów
+# Wspólne parametry (ALL)
 PARAM_ALL = {
-    0: 0,    
-    10: 10,  
-    12: 1,   
-    13: 0,   
-    18: 8,   
-    19: 20,  
-    20: 10,  
-    21: 10,  
-    22: 100, 
-    23: 100, 
-    28: 14,  
-    40: 2    
+    0: 0,    # Tryb pracy (0 = WOLNE_LEWE_PRAWA)
+    10: 10,  # Czas TimeOut (10s)
+    12: 1,   # PPoz NC/NO (0-1)
+    13: 0,   # PPoz strona (0-1)
+    18: 8,   # Prędkość (1-9)
+    19: 20,  # Pred.Min (1-100)
+    20: 10,  # Acc Open (1-20)
+    21: 10,  # Acc Close (1-20)
+    22: 100, # Break Open (50-250)
+    23: 100, # Break Close (50-250)
+    28: 14,  # Max Torque (0-20) - docelowo i tak nadpisywane optymalizatorem
+    40: 2    # Sensor Sensitive (2 = Ignoruje fizyczne dolne czujniki w automatach)
 }
 
 # Parametry specyficzne dla konkretnych bramek
-# ID 39 na 1 -> TRYB WIRTUALNY JEST KONIECZNY do HIL
+# ID 39 na 1 -> TWARDE WYMUSZENIE TRYBU WIRTUALNEGO (Zignorowanie fizyki)
 PARAM_SG = {
-    27: 10, 
-    32: 1,  
-    39: 1   
+    27: 10, # Close Delay (8-20)
+    32: 1,  # Hamulec używaj (0-1)
+    39: 1   # Sensor mode (1 = Tryb symulacji / zignoruj hardware)
 }
 
 PARAM_GT = {
-    27: 10, 
-    39: 1   
+    27: 10, # Close Delay
+    39: 1   # Sensor mode (1 = Tryb symulacji / zignoruj hardware)
 }
 
 PARAM_SK = {
-    27: 10, 
-    32: 1,  
-    39: 1   
+    27: 10, # Close Delay
+    32: 1,  # Hamulec używaj
+    39: 1   # Sensor mode (1 = Tryb symulacji / zignoruj hardware)
 }
 
 PARAM_BR = {
-    24: 5,  
-    32: 0,  
-    34: 1,  
-    38: 0   
+    24: 5,  # Overspeed (0-8)
+    32: 0,  # Hamulec używaj
+    34: 1,  # Rygiel używaj
+    38: 0   # Zbijak obrót
 }
 
 # =========================================================
@@ -85,7 +85,7 @@ BOOT_WAIT_LINK     = 5.0
 LOG_SYSTEM_READY   = "Permit manager"   
 SYSTEM_READY_TIMEOUT = 12.0             
 
-# LOGICZNE MAPOWANIE SENSOROW
+# LOGICZNE MAPOWANIE SENSOROW (Oczekiwane przez Permit Manager)
 RIGHT_SENSOR = 13
 RIGHT_DOWN_SENSOR = 10
 LEFT_SENSOR = 0
@@ -99,10 +99,11 @@ left_counter = 0
 current_mode = "WOLNE_LEWE_PRAWA"
 start_time = time.time()
 
+# --- OCZEKIWANE LOGI Z SYSTEMU ---
 LOG_GATE_OPENED    = "GATE OPENED"
 LOG_GATE_CLOSED    = "GATE CLOSED"
-LOG_ALARM_INTRUSION  = ["INTRUSION", "UNAUTHORIZED", "SECURITY_ZONE_STATE", "DANGEROUS BEHAVIOR"]
-LOG_ALARM_TAILGATING = ["TAILGATING", "UNAUTHORIZED", "SECURITY_ZONE_STATE", "DANGEROUS BEHAVIOR"]
+LOG_ALARM_INTRUSION  = ["INTRUSION", "UNAUTHORIZED", "SECURITY_ZONE_STATE"]
+LOG_ALARM_TAILGATING = ["TAILGATING", "UNAUTHORIZED", "SECURITY_ZONE_STATE"]
 LOG_MOTOR_ERROR    = "MOTOR ERROR"
 LOG_ALARM_NO_PERMIT  = "NO PERMITION"
 LOG_ALARM_SAFETY   = "SECURITY_ZONE_STATE"
@@ -116,7 +117,7 @@ def play_beep(freq, duration):
         import winsound
         winsound.Beep(freq, duration)
 
-def drain_rtt(jlink, max_bytes=8192):
+def drain_rtt(jlink, max_bytes=4096):
     try:
         chunk = jlink.rtt_read(0, max_bytes)
         if chunk:
@@ -190,12 +191,10 @@ def add_permission(jlink, direction):
         jlink.rtt_write(0, b'add_r\n')
     time.sleep(0.2)
 
-def get_counters(jlink, timeout_sec=2.0):
+def get_counters(jlink, timeout_sec=1.0):
     global right_counter, left_counter
 
-    drain_rtt(jlink, 8192)
     jlink.rtt_write(0, b'counter\n')
-    
     time.sleep(0.1)
     rtt = ''
     start_time_c = time.time()
@@ -204,22 +203,23 @@ def get_counters(jlink, timeout_sec=2.0):
         chunk = jlink.rtt_read(0, 1024)
         if chunk:
             rtt += "".join([chr(c) for c in chunk])
-            if "right counter" in rtt.lower() and "left counter" in rtt.lower():
-                time.sleep(0.05)
-                chunk = jlink.rtt_read(0, 1024)
-                if chunk: rtt += "".join([chr(c) for c in chunk])
-                break
         time.sleep(0.02)
 
-    matches_r = re.findall(r"(?i)right\s+counter\s*:\s*(\d+)", rtt)
-    matches_l = re.findall(r"(?i)left\s+counter\s*:\s*(\d+)", rtt)
+    pattern_right = r"right counter:(\d+)"
+    pattern_left  = r"left counter:(\d+)"
+
+    matches_r = re.findall(pattern_right, rtt)
+    matches_l = re.findall(pattern_left,  rtt)
 
     if matches_r and matches_l:
-        right_counter = int(matches_r[-1])
-        left_counter = int(matches_l[-1])
-        return right_counter, left_counter
+        right_val = int(matches_r[-1])
+        left_val  = int(matches_l[-1])
+        right_counter = right_val
+        left_counter  = left_val
+        return right_val, left_val
 
-    print("\n[WARN] get_counters: Nie udalo sie odnalezc scislej frazy licznika! Uzywam ostatnich wartosci (L:{}, R:{}).".format(left_counter, right_counter))
+    print("\n[WARN] get_counters: Failed to parse RTT response. "
+          "Using last known values (L:{}, R:{}).".format(left_counter, right_counter))
     return right_counter, left_counter
 
 # =========================================================
@@ -227,22 +227,21 @@ def get_counters(jlink, timeout_sec=2.0):
 # =========================================================
 
 def parse_get_response(resp, idx):
-    lines = [l.strip() for l in resp.split('\n') if l.strip()]
+    clean = re.sub(r'(?i).*?get\s+{}\s*[\r\n]+'.format(idx), '', resp)
+    lines = [l.strip() for l in clean.split('\n') if l.strip()]
     
     for line in lines:
-        # Odporność na śmieci z logów - ignorujemy wszystko co jest ewidentnie logiem zachowania
-        if any(x in line for x in ['manager', 'alarm', 'set', '>>', 'Feedback', 'INFO', 'ERROR', 'SENSOR', 'TimeOUT']):
+        if 'manager' in line.lower() or 'alarm' in line.lower() or 'set' in line.lower():
             continue
             
-        # Szukamy stricte formatu typu "2: 45" lub "ID 2 = 45"
-        match = re.search(r'(?:^|\s)' + str(idx) + r'\s*[:=]\s*(-?\d+)', line)
+        match = re.search(r'[=:]\s*(-?\d+)', line)
         if match:
             return int(match.group(1))
             
-        # Awaryjnie, jesli linijka zawiera sama liczbe (bez innych tekstow)
-        match = re.search(r'^[^\d]*(-?\d+)$', line)
-        if match and len(line) < 15: # Zabezpieczenie przed pobraniem wielkiego timestampu
-            return int(match.group(1))
+        clean_line = re.sub(r'\[.*?\]|\(.*?\)', '', line)
+        digits = re.findall(r'-?\d+', clean_line)
+        if digits:
+            return int(digits[-1])
             
     return None
 
@@ -644,18 +643,14 @@ def test_find_optimal_torque(jlink):
             print("   [INFO] Symulacja wirtualnego przejścia by zresetować stan bramki...")
             seq_lp = [LEFT_SENSOR, LEFT_SECURITY_SENSOR, CENTER_SECURITY_SENSOR, RIGHT_SECURITY_SENSOR, RIGHT_SENSOR]
             
-            jlink.rtt_write(0, 'sensor {} 1\n'.format(seq_lp[0]).encode('utf-8'))
-            time.sleep(0.3)
             for i in range(len(seq_lp)):
+                jlink.rtt_write(0, 'sensor {} 1\n'.format(seq_lp[i]).encode('utf-8'))
+                time.sleep(0.3)
                 if i + 1 < len(seq_lp):
                     jlink.rtt_write(0, 'sensor {} 1\n'.format(seq_lp[i+1]).encode('utf-8'))
                     time.sleep(0.3)
                 jlink.rtt_write(0, 'sensor {} 0\n'.format(seq_lp[i]).encode('utf-8'))
                 time.sleep(0.3)
-            
-            for s in set(seq_lp):
-                jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
-                time.sleep(0.05)
                 
             check_for_log_bool(jlink, LOG_GATE_CLOSED, WAIT_TIME_FOR_GATE_ARM_MOVEMENT)
             time.sleep(1)
@@ -694,13 +689,8 @@ def execute_custom_sequence(jlink, iter_num, config):
         print("Ustawianie trybu: {}".format(req_mode))
         mode_set(jlink, req_mode)
 
-    # 1. Czyszczenie stref przed rozpoczęciem testu
-    for s in [0, 1, 3, 5, 8, 10, 13]:
-        jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
-    time.sleep(0.3)
-
     global right_counter, left_counter
-    start_r, start_l = get_counters(jlink, 1.5)
+    start_r, start_l = get_counters(jlink, 1)
 
     if permit:
         print("Nadawanie uprawnienia dla: {}".format(permit))
@@ -711,10 +701,7 @@ def execute_custom_sequence(jlink, iter_num, config):
         jlink.rtt_write(0, custom_trigger.encode('utf-8'))
         time.sleep(0.5)
 
-    # POPRAWKA 1: Bezpieczna, globalna inicjalizacja full_log przed warunkiem
-    full_log = ""
     collected_logs = []
-    
     def do_sleep(dur):
         start_t = time.time()
         while time.time() - start_t < dur:
@@ -732,10 +719,10 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.stdout.flush()
 
     if seq:
-        jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[0]).encode('utf-8'))
-        do_sleep(0.3)
-
         for i in range(len(seq)):
+            jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[i]).encode('utf-8'))
+            do_sleep(0.3)
+
             if interrupt_step and i == interrupt_step["after_index"]:
                 print("\n[!] ALARM: Symulacja naruszenia strefy {}!".format(interrupt_step['sensor']))
                 jlink.rtt_write(0, 'sensor {} 1\n'.format(interrupt_step["sensor"]).encode('utf-8'))
@@ -744,14 +731,14 @@ def execute_custom_sequence(jlink, iter_num, config):
 
             if i + 1 < len(seq):
                 jlink.rtt_write(0, 'sensor {} 1\n'.format(seq[i+1]).encode('utf-8'))
-                do_sleep(0.1)
+                do_sleep(0.3)
 
             jlink.rtt_write(0, 'sensor {} 0\n'.format(seq[i]).encode('utf-8'))
             do_sleep(0.3)
 
     if expected_log:
         found = False
-        full_log = "".join(collected_logs) # Aktualizujemy log biezacymi zapisami
+        full_log = "".join(collected_logs)
         
         def check_log(expected, text):
             if isinstance(expected, list):
@@ -782,53 +769,30 @@ def execute_custom_sequence(jlink, iter_num, config):
             sys.exit(1)
         print("\nSUKCES: Zweryfikowano zachowanie '{}'.".format(expected_log))
 
-    time.sleep(2.5) # Czas na uspokojenie firmware po tescie i fizyczne zamkniecie skrzydel bramki
-
-    # Czyszczenie post-testowe
-    for s in [0, 1, 3, 5, 8, 10, 13]:
-        jlink.rtt_write(0, 'sensor {} 0\n'.format(s).encode('utf-8'))
-    
-    # Wyssanie resztek logów z RAM przed weryfikacja
-    time.sleep(0.5)
-    rem_logs = drain_rtt(jlink, 4096)
-    if rem_logs:
-        full_log += rem_logs
-        filter_and_print_log(rem_logs)
+    time.sleep(1)
 
     if custom_restore:
         print("Wysylanie Komendy Przywracajacej: {}".format(custom_restore.strip()))
         jlink.rtt_write(0, custom_restore.encode('utf-8'))
         time.sleep(1.0)
 
-    end_r, end_l = get_counters(jlink, 2.0)
+    end_r, end_l = get_counters(jlink, 1)
     total_start = start_r + start_l
     total_end   = end_r + end_l
 
-    # --- ZAAWANSOWANA WERYFIKACJA LICZNIKA W TRYBIE SYMULACJI ---
     if expect_count is True:
         if total_end <= total_start:
-            print("\n[INFO] Licznik przejsc z komendy 'counter' nie ulegl zmianie. To naturalne w trybie wirtualnym (Sensor Mode = 1).")
-            if "SUBTRACT" in full_log:
-                print("SUKCES: Oprogramowanie Permit Manager pomyslnie zaliczylo przejscie w RAM (Commit access SUBTRACT)!")
-            elif LOG_GATE_CLOSED in full_log:
-                print("SUKCES: Brama wrocila do stanu zamknietego. Przejscie uznane za zakonczone poprawnie.")
-            else:
-                print("\nBLAD: Przejscie zignorowane przez logike Permit Managera! - TEST FAILED")
-                sys.exit(1)
-        else:
-            right_counter, left_counter = end_r, end_l
-            print("\nSUKCES: Licznik EEPROM wzrosl (L:{}, R:{})".format(left_counter, right_counter))
-            
-    elif expect_count is False:
-        if total_end > total_start:
-            print("\nBLAD: System nieslusznie zliczyl przejscie w stale pamieci EEPROM! - TEST FAILED")
+            print("\nBLAD: Zliczanie przejscia NIE powiodlo sie! - TEST FAILED")
             sys.exit(1)
         else:
-            if "SUBTRACT" in full_log:
-                print("\nBLAD: System nieslusznie zliczyl przejscie w RAM (SUBTRACT)! - TEST FAILED")
-                sys.exit(1)
+            right_counter, left_counter = end_r, end_l
+            print("\nSUKCES: Licznik wzrosl (L:{}, R:{})".format(left_counter, right_counter))
+    elif expect_count is False:
+        if total_end > total_start:
+            print("\nBLAD: System nieslusznie zliczyl przejscie! - TEST FAILED")
+            sys.exit(1)
+        else:
             print("\nSUKCES: System poprawnie zignorowal bledne/brakujace przejscie.")
-            
     elif expect_count is None:
         right_counter, left_counter = end_r, end_l
         print("\nSUKCES: Weryfikacja licznika pominieta (ustawienie specjalne).")
@@ -847,9 +811,7 @@ def generate_100_scenarios():
     scenarios.append({"name": "KONTROLA: Odbicie bez uprawnienia", "mode": "KONTROLA_LEWE_PRAWA", "permit": None, "seq": [LEFT_SENSOR], "log": LOG_ALARM_NO_PERMIT, "count": False})
     scenarios.append({"name": "BLOKADA: Proba wejscia z lewej", "mode": "BLOKADA_LEWE_PRAWA", "permit": "L", "seq": [LEFT_SENSOR], "log": "", "count": False})
     scenarios.append({"name": "KONTROLA ZLY KIERUNEK", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [RIGHT_SENSOR, RIGHT_SECURITY_SENSOR], "log": LOG_ALARM_INTRUSION, "count": False})
-    
-    # 5. Zwiekszona tolerancja Timeoutu z 10 na 12 sekund dla plynniejszego dzialania
-    scenarios.append({"name": "TIMEOUT: Nadano uprawnienie L", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [], "log": LOG_TIMEOUT, "count": False, "wait_time": 12})
+    scenarios.append({"name": "TIMEOUT: Nadano uprawnienie L", "mode": "KONTROLA_LEWE_PRAWA", "permit": "L", "seq": [], "log": LOG_TIMEOUT, "count": False, "wait_time": 10})
     scenarios.append({"name": "WYCOFANIE: Uzytkownik wszedl i zrezygnowal", "mode": "WOLNE_LEWE_PRAWA", "seq": [LEFT_SENSOR, LEFT_SECURITY_SENSOR, LEFT_SENSOR], "log": "", "count": False})
     scenarios.append({"name": "ALARM PPOZ: Awaryjne otwarcie", "mode": "WOLNE_LEWE_PRAWA", "custom_trigger": "ppoz 1\n", "seq": seq_lp, "log": "", "count": None, "custom_restore": "ppoz 0\n"})
     
